@@ -221,6 +221,43 @@ func registerVaultAPI(r *gin.Engine, v *Vault) {
 	})
 }
 
+// normalizeListenAddr 允许只写端口（如 8787），等价于 :8787（省略 IP 时监听所有网卡，与 0.0.0.0:端口 同义）。
+func normalizeListenAddr(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	if strings.Contains(s, ":") {
+		return s
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return s
+		}
+	}
+	return ":" + s
+}
+
+func portSuffix(addr string) string {
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		return addr[i:]
+	}
+	return ""
+}
+
+func listenBindsAllInterfaces(addr string) bool {
+	switch {
+	case strings.HasPrefix(addr, ":"):
+		return true
+	case strings.HasPrefix(addr, "0.0.0.0:"):
+		return true
+	case strings.HasPrefix(addr, "[::]:"):
+		return true
+	default:
+		return false
+	}
+}
+
 func browserURL(addr string) string {
 	switch {
 	case strings.HasPrefix(addr, ":"):
@@ -454,11 +491,12 @@ func runHTTPServerForeground(addr string, vault *Vault, webRoot fs.FS) error {
 }
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8787", "监听地址；局域网访问可用 0.0.0.0:8787")
+	addr := flag.String("addr", ":8787", "监听地址。默认 :8787 监听所有网卡（便于服务器远程访问）；仅本机请用 127.0.0.1:8787")
 	dataPath := flag.String("data", "", "Markdown 仓库根目录，默认可执行文件旁的 notes-vault；也可指向旧版 notes-data.json 以自动迁移")
 	svcName := flag.String("svc-name", "LocalNotes", "安装系统服务时使用的内部名称（install/uninstall 需一致）")
 	svcFlag := flag.String("service", "", "系统服务：install | uninstall | start | stop | restart；留空则前台运行（Ctrl+C 停止）")
 	flag.Parse()
+	listenAddr := normalizeListenAddr(*addr)
 
 	vaultRoot, legacyJSON := computeVaultRoot(*dataPath)
 	if err := os.MkdirAll(vaultRoot, 0o755); err != nil {
@@ -478,13 +516,13 @@ func main() {
 		DisplayName: "本地网页笔记",
 		Description: "本地 Markdown 笔记 HTTP 服务（Gin）",
 		Arguments: []string{
-			"-addr=" + *addr,
+			"-addr=" + listenAddr,
 			"-data=" + vaultRoot,
 		},
 	}
 
 	prg := &program{
-		addr:      *addr,
+		addr:      listenAddr,
 		vaultRoot: vaultRoot,
 		vault:     vault,
 		web:       webRoot,
@@ -502,19 +540,22 @@ func main() {
 	}
 
 	log.Printf("Markdown 仓库: %s （结构 YYYY/MM/DD/<id>/note.md，图片与 note.md 同目录）", vaultRoot)
-	log.Printf("在浏览器打开（须带端口）: %s", browserURL(*addr))
+	log.Printf("在浏览器打开（须带端口）: %s", browserURL(listenAddr))
+	if listenBindsAllInterfaces(listenAddr) {
+		log.Printf("当前监听所有网卡：其它机器请用 http://<本机IP>%s 访问；若仍无法访问，请检查系统防火墙与云安全组是否放行该端口", portSuffix(listenAddr))
+	}
 	log.Printf("安装为系统服务（管理员）:  %s -service install -svc-name %s", filepath.Base(os.Args[0]), *svcName)
 
-	if err := checkListenAddr(*addr); err != nil {
-		log.Printf("无法监听 %s: %v", *addr, err)
+	if err := checkListenAddr(listenAddr); err != nil {
+		log.Printf("无法监听 %s: %v", listenAddr, err)
 		log.Fatalf(
-			"端口可能已被其它程序占用。请换端口启动，例如：\n  %s -addr 127.0.0.1:8899",
+			"端口可能已被其它程序占用。请换端口启动，例如：\n  %s -addr=:8899",
 			filepath.Base(os.Args[0]),
 		)
 	}
 
 	if service.Interactive() {
-		if err := runHTTPServerForeground(*addr, vault, webRoot); err != nil {
+		if err := runHTTPServerForeground(listenAddr, vault, webRoot); err != nil {
 			log.Fatal(err)
 		}
 		return

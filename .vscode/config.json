@@ -7,7 +7,7 @@
     "passphrase": "11"
   },
   "remoteBasePath": "/home/tom/work/test/",
-  "runCommand": "make && ./nos",
-  "localCommand": "",
-  "localCommand1": ""
+  "runCommand": "go run .",
+  "localCommand": "build.bat run",
+  "localCommand1": "build.bat  build"
 }

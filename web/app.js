@@ -33,12 +33,16 @@
   let viewMode = "preview";
   /** 当前笔记在仓库中的相对目录，如 2026/03/24/n_xxx，用于解析相对路径图片 */
   let activeNoteDir = "";
+  /** 侧栏顺序（仅本会话）；null 表示按 cmpNoteOrder */
+  /** @type {Map<string, number> | null} */
+  let listOrderRank = null;
 
   async function refreshNotes() {
     const r = await fetch("/api/notes");
     if (!r.ok) throw new Error("load failed");
     const data = await r.json();
     notes = Array.isArray(data) ? data : [];
+    listOrderRank = null;
   }
 
   function loadTheme() {
@@ -96,20 +100,42 @@
     return pick.slice(0, 44) || "无标题笔记";
   }
 
+  /** 与 vault List 一致：按 dir（日期路径）降序、再 id，保存后不重排 */
+  function cmpNoteOrder(a, b) {
+    const da = a.dir || "";
+    const db = b.dir || "";
+    if (da !== db) return db.localeCompare(da);
+    return (b.id || "").localeCompare(a.id || "");
+  }
+
+  function sortNotesForSidebar(arr) {
+    if (listOrderRank && listOrderRank.size) {
+      return [...arr].sort((a, b) => {
+        const ra = listOrderRank.has(a.id) ? listOrderRank.get(a.id) : 1e9;
+        const rb = listOrderRank.has(b.id) ? listOrderRank.get(b.id) : 1e9;
+        if (ra !== rb) return ra - rb;
+        return cmpNoteOrder(a, b);
+      });
+    }
+    return [...arr].sort(cmpNoteOrder);
+  }
+
   function filterNotes(query) {
     const q = query.trim().toLowerCase();
-    if (!q) return [...notes].sort((a, b) => b.updatedAt - a.updatedAt);
+    if (!q) return sortNotesForSidebar(notes);
     return notes
       .filter((n) => {
         return n.title.toLowerCase().includes(q) || n.body.toLowerCase().includes(q);
       })
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+      .sort(cmpNoteOrder);
   }
 
   function renderList() {
     const query = els.search.value;
     const filtered = filterNotes(query);
-    els.noteList.innerHTML = "";
+    const listEl = els.noteList;
+    const prevScrollTop = listEl.scrollTop;
+    listEl.innerHTML = "";
     const frag = document.createDocumentFragment();
     for (const note of filtered) {
       const li = document.createElement("li");
@@ -129,7 +155,8 @@
       li.append(btn);
       frag.append(li);
     }
-    els.noteList.append(frag);
+    listEl.append(frag);
+    listEl.scrollTop = prevScrollTop;
     els.noteCount.textContent =
       notes.length === 0
         ? "暂无笔记"
@@ -408,6 +435,7 @@
   }
 
   async function createNote() {
+    const insertBeforeId = activeId;
     const r = await fetch("/api/notes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -418,7 +446,17 @@
       return;
     }
     const note = await r.json();
-    notes.unshift(note);
+    const baseSorted = sortNotesForSidebar([...notes]);
+    const ids = baseSorted.map((n) => n.id);
+    let newIds;
+    if (insertBeforeId && ids.includes(insertBeforeId)) {
+      const idx = ids.indexOf(insertBeforeId);
+      newIds = [...ids.slice(0, idx), note.id, ...ids.slice(idx)];
+    } else {
+      newIds = [note.id, ...ids];
+    }
+    listOrderRank = new Map(newIds.map((id, i) => [id, i]));
+    notes.push(note);
     openNote(note.id, true);
   }
 
@@ -434,6 +472,16 @@
       return;
     }
     notes = notes.filter((n) => n.id !== id);
+    if (listOrderRank) {
+      listOrderRank.delete(id);
+      const sorted = [...notes].sort((a, b) => {
+        const ra = listOrderRank.has(a.id) ? listOrderRank.get(a.id) : 1e9;
+        const rb = listOrderRank.has(b.id) ? listOrderRank.get(b.id) : 1e9;
+        if (ra !== rb) return ra - rb;
+        return cmpNoteOrder(a, b);
+      });
+      listOrderRank = sorted.length ? new Map(sorted.map((n, i) => [n.id, i])) : null;
+    }
     activeId = null;
     activeNoteDir = "";
     els.title.value = "";

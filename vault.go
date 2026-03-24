@@ -208,7 +208,14 @@ func (v *Vault) List() ([]Note, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(notes, func(i, j int) bool { return notes[i].UpdatedAt > notes[j].UpdatedAt })
+	// 按仓库路径排序，编辑只改 updatedAt 不改 dir，列表顺序稳定（避免切换笔记时条目乱跳）
+	sort.Slice(notes, func(i, j int) bool {
+		di, dj := notes[i].Dir, notes[j].Dir
+		if di != dj {
+			return di > dj
+		}
+		return notes[i].ID > notes[j].ID
+	})
 	return notes, nil
 }
 
