@@ -558,7 +558,7 @@ func main() {
 		}
 		return
 	}
-
+	log.Printf("版本: %s", "0.1.0")
 	log.Printf("Markdown 仓库: %s （结构 YYYY/MM/DD/<id>/note.md，图片与 note.md 同目录）", vaultRoot)
 	log.Printf("在浏览器打开（须带端口）: %s", browserURL(listenAddr))
 	if listenBindsAllInterfaces(listenAddr) {
