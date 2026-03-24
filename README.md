@@ -1,3 +1,5 @@
+<img width="1912" height="932" alt="image" src="https://github.com/user-attachments/assets/8d464e91-c477-4265-a7aa-49134e55fe23" />
+
 # 本地网页笔记 · Local Notes
 
 轻量、单二进制的 **本地 Markdown 笔记** 应用：内置 Web UI，数据以 `YYYY/MM/DD/<笔记ID>/note.md` 目录结构存放在本机，支持图片粘贴与拖拽上传、明暗主题、侧栏搜索与自定义排序。
