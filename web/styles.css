@@ -311,6 +311,15 @@ body {
   overscroll-behavior: contain;
 }
 
+.note-list-pad {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  list-style: none;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
 .note-item {
   margin-bottom: 4px;
 }

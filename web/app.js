@@ -6,6 +6,8 @@
   /** 单条笔记正文参与检索的最大字符数，避免极大文件拖慢输入 */
   const SEARCH_BODY_MAX_CHARS = 24000;
   const SEARCH_LIST_DEBOUNCE_MS = 110;
+  const VIRTUAL_ROW_ESTIMATE_PX = 68;
+  const VIRTUAL_OVERSCAN = 8;
 
   /** @typedef {{ id: string, title: string, body: string, updatedAt: number, dir: string }} Note */
 
@@ -42,6 +44,11 @@
   /** 当前笔记在仓库中的相对目录，如 2026/03/24/n_xxx，用于解析相对路径图片 */
   let activeNoteDir = "";
   let searchListTimer = null;
+  /** @type {Note[]} 当前列表展示的过滤结果（与虚拟列表同步） */
+  let virtualFiltered = [];
+  /** 0 表示尚未测量，用 VIRTUAL_ROW_ESTIMATE_PX */
+  let virtualRowHeightPx = 0;
+  let virtualListScrollRaf = 0;
 
   async function refreshNotes() {
     const r = await fetch("/api/notes");
@@ -87,6 +94,10 @@
     const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", next);
     localStorage.setItem(THEME_KEY, next);
+    virtualRowHeightPx = 0;
+    queueMicrotask(() => {
+      if (virtualFiltered.length) renderVirtualWindow();
+    });
   }
 
   function getActiveNote() {
@@ -175,24 +186,162 @@
     return scored.map((x) => x.n);
   }
 
+  function effectiveRowHeightPx() {
+    return virtualRowHeightPx > 0 ? virtualRowHeightPx : VIRTUAL_ROW_ESTIMATE_PX;
+  }
+
+  function measureNoteItemRowHeight(li) {
+    const h = li.getBoundingClientRect().height;
+    const mb = parseFloat(getComputedStyle(li).marginBottom) || 0;
+    return Math.max(1, Math.ceil(h + mb));
+  }
+
+  function virtualIndexById(id) {
+    for (let i = 0; i < virtualFiltered.length; i++) {
+      if (virtualFiltered[i].id === id) return i;
+    }
+    return -1;
+  }
+
+  function clampScrollToShowIndex(idx) {
+    const listEl = els.noteList;
+    const rh = effectiveRowHeightPx();
+    const viewH = listEl.clientHeight;
+    const top = idx * rh;
+    let st = listEl.scrollTop;
+    if (top < st) st = top;
+    else if (top + rh > st + viewH) st = top + rh - viewH;
+    listEl.scrollTop = st;
+  }
+
+  function createNoteItemLi(note) {
+    const li = document.createElement("li");
+    li.className = "note-item";
+    li.setAttribute("role", "listitem");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "note-item-btn" + (note.id === activeId ? " active" : "");
+    btn.dataset.id = note.id;
+    const preview = document.createElement("div");
+    preview.className = "note-item-preview";
+    preview.textContent = listTitle(note);
+    const meta = document.createElement("div");
+    meta.className = "note-item-meta";
+    meta.textContent = formatTime(note.updatedAt);
+    btn.append(preview, meta);
+    li.append(btn);
+    return li;
+  }
+
+  function findNoteListBtnById(id) {
+    return [...els.noteList.querySelectorAll(".note-item-btn")].find((b) => b.dataset.id === id) || null;
+  }
+
   function applyListTabIndices() {
     const btns = [...els.noteList.querySelectorAll(".note-item-btn")];
     btns.forEach((b) => {
       b.tabIndex = -1;
     });
-    const pick = btns.find((b) => b.dataset.id === activeId) || btns[0];
+    const ae = document.activeElement;
+    const focusedInList =
+      ae?.classList?.contains("note-item-btn") && els.noteList.contains(ae);
+    const pick = focusedInList ? ae : btns.find((b) => b.dataset.id === activeId) || btns[0];
     if (pick) pick.tabIndex = 0;
   }
 
-  function focusNoteListButton(btn) {
-    const btns = [...els.noteList.querySelectorAll(".note-item-btn")];
-    btns.forEach((b) => {
-      b.tabIndex = -1;
-    });
-    if (!btn || !btns.includes(btn)) return;
-    btn.tabIndex = 0;
+  function focusNoteListButton(btn, scrollInto = true) {
+    if (!btn) return;
     btn.focus();
-    btn.scrollIntoView({ block: "nearest" });
+    if (scrollInto) btn.scrollIntoView({ block: "nearest" });
+    applyListTabIndices();
+  }
+
+  function renderVirtualWindow() {
+    const listEl = els.noteList;
+    const n = virtualFiltered.length;
+    if (n === 0) {
+      listEl.innerHTML = "";
+      return;
+    }
+
+    const rh = effectiveRowHeightPx();
+    const st = listEl.scrollTop;
+    const viewH = Math.max(listEl.clientHeight, 1);
+    let start = 0;
+    let end = n;
+    if (viewH > 1) {
+      start = Math.floor(st / rh) - VIRTUAL_OVERSCAN;
+      end = Math.ceil((st + viewH) / rh) + VIRTUAL_OVERSCAN;
+      start = Math.max(0, start);
+      end = Math.min(n, end);
+    } else {
+      end = Math.min(n, 48);
+    }
+
+    const topPad = start * rh;
+    const bottomPad = (n - end) * rh;
+
+    const frag = document.createDocumentFragment();
+    const padTop = document.createElement("li");
+    padTop.className = "note-list-pad note-list-pad-top";
+    padTop.style.height = topPad + "px";
+    padTop.setAttribute("aria-hidden", "true");
+    frag.append(padTop);
+
+    for (let i = start; i < end; i++) {
+      frag.append(createNoteItemLi(virtualFiltered[i]));
+    }
+
+    const padBot = document.createElement("li");
+    padBot.className = "note-list-pad note-list-pad-bottom";
+    padBot.style.height = Math.max(0, bottomPad) + "px";
+    padBot.setAttribute("aria-hidden", "true");
+    frag.append(padBot);
+
+    const focusBtn = document.activeElement?.classList?.contains("note-item-btn")
+      ? document.activeElement
+      : null;
+    const focusId = focusBtn && listEl.contains(focusBtn) ? focusBtn.dataset.id : null;
+
+    listEl.innerHTML = "";
+    listEl.append(frag);
+    listEl.scrollTop = st;
+
+    const firstItem = listEl.querySelector(".note-item");
+    if (firstItem && virtualRowHeightPx === 0) {
+      const measured = measureNoteItemRowHeight(firstItem);
+      if (measured > 0 && Math.abs(measured - rh) >= 1) {
+        virtualRowHeightPx = measured;
+        const maxScroll = Math.max(0, n * measured - listEl.clientHeight);
+        listEl.scrollTop = Math.min(Math.round((st / rh) * measured), maxScroll);
+        renderVirtualWindow();
+        return;
+      }
+      virtualRowHeightPx = measured || VIRTUAL_ROW_ESTIMATE_PX;
+    }
+
+    if (focusId) {
+      const again = findNoteListBtnById(focusId);
+      if (again) again.focus();
+    }
+    applyListTabIndices();
+  }
+
+  function scheduleVirtualScrollRerender() {
+    if (virtualListScrollRaf) return;
+    virtualListScrollRaf = requestAnimationFrame(() => {
+      virtualListScrollRaf = 0;
+      renderVirtualWindow();
+    });
+  }
+
+  function moveVirtualFocusToIndex(idx) {
+    if (idx < 0 || idx >= virtualFiltered.length) return;
+    clampScrollToShowIndex(idx);
+    renderVirtualWindow();
+    const id = virtualFiltered[idx].id;
+    const btn = findNoteListBtnById(id);
+    if (btn) focusNoteListButton(btn, false);
   }
 
   function renderList() {
@@ -202,39 +351,45 @@
     }
 
     const query = els.search.value;
-    const filtered = filterNotes(query);
+    virtualFiltered = filterNotes(query);
     const listEl = els.noteList;
     const prevScrollTop = listEl.scrollTop;
     const ae = document.activeElement;
     const wasListBtn = ae?.classList?.contains("note-item-btn") && listEl.contains(ae);
     const prevListId = wasListBtn ? ae.dataset.id : null;
 
-    listEl.innerHTML = "";
-    const frag = document.createDocumentFragment();
-    for (const note of filtered) {
-      const li = document.createElement("li");
-      li.className = "note-item";
-      li.setAttribute("role", "listitem");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "note-item-btn" + (note.id === activeId ? " active" : "");
-      btn.dataset.id = note.id;
-      const preview = document.createElement("div");
-      preview.className = "note-item-preview";
-      preview.textContent = listTitle(note);
-      const meta = document.createElement("div");
-      meta.className = "note-item-meta";
-      meta.textContent = formatTime(note.updatedAt);
-      btn.append(preview, meta);
-      li.append(btn);
-      frag.append(li);
+    if (virtualFiltered.length === 0) {
+      listEl.innerHTML = "";
+      listEl.scrollTop = 0;
+      virtualRowHeightPx = 0;
+      applyListTabIndices();
+      if (notes.length === 0) els.noteCount.textContent = "暂无笔记";
+      else {
+        const qTrim = query.trim();
+        const multi = searchTokens(query).length > 1;
+        let hint = qTrim ? `，显示 0 条${multi ? "（多词须同时命中）" : "（标题命中优先）"}` : "";
+        els.noteCount.textContent = `共 ${notes.length} 条${hint}`;
+      }
+      return;
     }
-    listEl.append(frag);
-    listEl.scrollTop = prevScrollTop;
+
+    const rh = effectiveRowHeightPx();
+    const maxScroll = Math.max(0, virtualFiltered.length * rh - listEl.clientHeight);
+    listEl.scrollTop = Math.min(prevScrollTop, maxScroll);
 
     if (wasListBtn && prevListId) {
-      const again = [...listEl.querySelectorAll(".note-item-btn")].find((b) => b.dataset.id === prevListId);
-      if (again) focusNoteListButton(again);
+      const ix = virtualIndexById(prevListId);
+      if (ix >= 0) clampScrollToShowIndex(ix);
+    } else if (activeId) {
+      const ix = virtualIndexById(activeId);
+      if (ix >= 0) clampScrollToShowIndex(ix);
+    }
+
+    renderVirtualWindow();
+
+    if (wasListBtn && prevListId) {
+      const again = findNoteListBtnById(prevListId);
+      if (again) focusNoteListButton(again, false);
       else applyListTabIndices();
     } else {
       applyListTabIndices();
@@ -242,13 +397,13 @@
 
     const qTrim = query.trim();
     const multi = searchTokens(query).length > 1;
-    let hint = "";
     if (notes.length === 0) {
       els.noteCount.textContent = "暂无笔记";
       return;
     }
+    let hint = "";
     if (qTrim) {
-      hint = `，显示 ${filtered.length} 条`;
+      hint = `，显示 ${virtualFiltered.length} 条`;
       hint += multi ? "（多词须同时命中）" : "（标题命中优先）";
     }
     els.noteCount.textContent = `共 ${notes.length} 条${hint}`;
@@ -654,12 +809,21 @@
   els.btnSidebarExpand?.addEventListener("click", expandSidebar);
 
   els.search.addEventListener("input", scheduleSearchListRender);
+  els.noteList.addEventListener("scroll", scheduleVirtualScrollRerender, { passive: true });
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => {
+      if (virtualFiltered.length) scheduleVirtualScrollRerender();
+    }).observe(els.noteList);
+  }
+
   els.search.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown") {
-      const first = els.noteList.querySelector(".note-item-btn");
-      if (!first) return;
+      if (virtualFiltered.length === 0) return;
       e.preventDefault();
-      focusNoteListButton(first);
+      els.noteList.scrollTop = 0;
+      renderVirtualWindow();
+      const first = els.noteList.querySelector(".note-item-btn");
+      if (first) focusNoteListButton(first, false);
       return;
     }
     if (e.key === "Escape" && els.search.value) {
@@ -671,17 +835,18 @@
 
   els.noteList.addEventListener("keydown", (e) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const items = [...els.noteList.querySelectorAll(".note-item-btn")];
-    if (!items.length) return;
-    const i = items.indexOf(document.activeElement);
-    if (i < 0) return;
+    const cur = document.activeElement;
+    if (!cur?.classList?.contains("note-item-btn")) return;
+    const idx = virtualIndexById(cur.dataset.id);
+    if (idx < 0) return;
     e.preventDefault();
     if (e.key === "ArrowDown") {
-      if (i < items.length - 1) focusNoteListButton(items[i + 1]);
-    } else if (i === 0) {
+      if (idx >= virtualFiltered.length - 1) return;
+      moveVirtualFocusToIndex(idx + 1);
+    } else if (idx === 0) {
       els.search.focus();
     } else {
-      focusNoteListButton(items[i - 1]);
+      moveVirtualFocusToIndex(idx - 1);
     }
   });
 
