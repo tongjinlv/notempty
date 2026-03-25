@@ -23,7 +23,7 @@ if /i "%~1"=="build" (
 )
 
 if /i "%~1"=="run" (
-    echo 正在运行 ^(go run .，与 main.go 中 flag 一致，可跟 -addr、-data 等^)...
+    echo 正在运行 ^(go run .；监听与仓库见 notes-config.json，可用 -config 指定配置路径^)...
     for /f "tokens=1*" %%A in ("%*") do go run . %%B
     goto :eof
 )
@@ -35,8 +35,7 @@ echo 用法: %~nx0 ^<命令^> [运行时的额外参数...]
 echo.
 echo   build     编译当前目录下整个 main 包，输出 notes.exe
 echo   run       开发运行 ^(go run .^)，可附加程序参数，例如:
-echo             %~nx0 run -addr=0.0.0.0:8787
-echo             %~nx0 run -data=E:\path\to\notes-vault
+echo             %~nx0 run -config=D:\path\notes-config.json
 echo   help      显示本说明
 echo.
 if not "%~1"=="" if /i not "%~1"=="help" if /i not "%~1"=="-h" if /i not "%~1"=="--help" exit /b 1

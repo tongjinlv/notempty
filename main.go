@@ -100,7 +100,7 @@ func resolveVaultRootFlag(flagValue string) string {
 	return defaultVaultRoot()
 }
 
-// computeVaultRoot：若 -data 指向已有的 .json 文件，则仓库目录为该文件同级的 notes-vault，并返回需迁移的 json 路径。
+// computeVaultRoot：若 data 路径指向已有的 .json 文件，则仓库目录为该文件同级的 notes-vault，并返回需迁移的 json 路径。
 func computeVaultRoot(dataFlag string) (vaultRoot string, legacyJSON string) {
 	if dataFlag != "" && strings.HasSuffix(strings.ToLower(dataFlag), ".json") {
 		if st, err := os.Stat(dataFlag); err == nil && !st.IsDir() {
@@ -225,6 +225,7 @@ func registerVaultAPI(r *gin.Engine, v *Vault) {
 }
 
 // normalizeListenAddr 允许只写端口（如 8787），等价于 :8787（省略 IP 时监听所有网卡，与 0.0.0.0:端口 同义）。
+// 配置为 127.0.0.1:端口 时保持原样，仅本机可访；要用本机其它网卡 IP 访问请改为 :端口 或 0.0.0.0:端口。
 func normalizeListenAddr(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -239,37 +240,6 @@ func normalizeListenAddr(s string) string {
 		}
 	}
 	return ":" + s
-}
-
-func portSuffix(addr string) string {
-	if i := strings.LastIndex(addr, ":"); i >= 0 {
-		return addr[i:]
-	}
-	return ""
-}
-
-func listenBindsAllInterfaces(addr string) bool {
-	switch {
-	case strings.HasPrefix(addr, ":"):
-		return true
-	case strings.HasPrefix(addr, "0.0.0.0:"):
-		return true
-	case strings.HasPrefix(addr, "[::]:"):
-		return true
-	default:
-		return false
-	}
-}
-
-func browserURL(addr string) string {
-	switch {
-	case strings.HasPrefix(addr, ":"):
-		return "http://127.0.0.1" + addr
-	case strings.HasPrefix(addr, "0.0.0.0:"):
-		return "http://127.0.0.1:" + strings.TrimPrefix(addr, "0.0.0.0:")
-	default:
-		return "http://" + addr
-	}
 }
 
 func checkListenAddr(addr string) error {
@@ -511,14 +481,22 @@ func runHTTPServerForeground(addr string, vault *Vault, webRoot fs.FS) error {
 }
 
 func main() {
-	addr := flag.String("addr", ":8787", "监听地址。默认 :8787 监听所有网卡（便于服务器远程访问）；仅本机请用 127.0.0.1:8787")
-	dataPath := flag.String("data", "", "Markdown 仓库根目录，默认可执行文件旁的 notes-vault；也可指向旧版 notes-data.json 以自动迁移")
+	configPath := flag.String("config", "", "配置文件；空则使用可执行文件同目录下 "+defaultConfigFileName)
 	svcName := flag.String("svc-name", "LocalNotes", "安装系统服务时使用的内部名称（install/uninstall 需一致）")
 	svcFlag := flag.String("service", "", "系统服务：install | uninstall | start | stop | restart；留空则前台运行（Ctrl+C 停止）")
 	flag.Parse()
-	listenAddr := normalizeListenAddr(*addr)
 
-	vaultRoot, legacyJSON := computeVaultRoot(*dataPath)
+	cfgFile, err := resolveConfigPath(*configPath)
+	if err != nil {
+		log.Fatalf("配置文件路径: %v", err)
+	}
+	fileCfg, err := loadAppConfig(cfgFile)
+	if err != nil {
+		log.Fatalf("读取配置 %s: %v", cfgFile, err)
+	}
+	listenAddr := normalizeListenAddr(strings.TrimSpace(fileCfg.Listen))
+
+	vaultRoot, legacyJSON := computeVaultRoot(resolveDataPathForConfig(fileCfg.Data))
 	if err := os.MkdirAll(vaultRoot, 0o755); err != nil {
 		log.Fatalf("创建仓库目录失败 %s: %v", vaultRoot, err)
 	}
@@ -535,10 +513,7 @@ func main() {
 		Name:        *svcName,
 		DisplayName: "本地网页笔记",
 		Description: "本地 Markdown 笔记 HTTP 服务（Gin）",
-		Arguments: []string{
-			"-addr=" + listenAddr,
-			"-data=" + vaultRoot,
-		},
+		Arguments: []string{"-config=" + cfgFile},
 	}
 
 	prg := &program{
@@ -558,22 +533,22 @@ func main() {
 		}
 		return
 	}
-	log.Printf("版本: %s", "0.1.0")
+
+	log.Printf("配置: %s", cfgFile)
 	log.Printf("Markdown 仓库: %s （结构 YYYY/MM/DD/<id>/note.md，图片与 note.md 同目录）", vaultRoot)
-	log.Printf("在浏览器打开（须带端口）: %s", browserURL(listenAddr))
-	if listenBindsAllInterfaces(listenAddr) {
-		log.Printf("当前监听所有网卡：其它机器请用 http://<本机IP>%s 访问；若仍无法访问，请检查系统防火墙与云安全组是否放行该端口", portSuffix(listenAddr))
+	log.Printf("监听: %s | 在浏览器打开: %s", listenAddr, browserOpenURL(listenAddr))
+	if bindsBroad(listenAddr) {
+		log.Printf("多网卡监听：其它机器请用 http://<本机IP>%s；注意防火墙与安全组", portSuffix(listenAddr))
 	}
 	log.Printf("安装为系统服务（管理员）:  %s -service install -svc-name %s", filepath.Base(os.Args[0]), *svcName)
-
 	if err := checkListenAddr(listenAddr); err != nil {
 		log.Printf("无法监听 %s: %v", listenAddr, err)
 		log.Fatalf(
-			"端口可能已被其它程序占用。请换端口启动，例如：\n  %s -addr=:8899",
-			filepath.Base(os.Args[0]),
+			"端口可能已被其它程序占用。请修改 %s 中的 listen",
+			cfgFile,
 		)
 	}
-
+	log.Printf("listenAddr: %s", listenAddr)
 	if service.Interactive() {
 		if err := runHTTPServerForeground(listenAddr, vault, webRoot); err != nil {
 			log.Fatal(err)

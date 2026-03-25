@@ -30,7 +30,7 @@ cd 你的仓库
 go run .
 ```
 
-浏览器访问控制台输出的地址（默认监听 `:8787`，即本机所有网卡；仅本机可改为 `127.0.0.1:8787`）。
+在可执行文件同目录放置 `notes-config.json`（可参考 `notes-config.example.json`），其中 `listen` 控制监听地址。浏览器访问控制台输出的 URL。
 
 ### 从源码构建
 
@@ -43,17 +43,17 @@ go build -ldflags "-X=main.version=1.0.0" -o notes .
 Windows 下可使用仓库中的 `build.bat`：
 
 - `build.bat build` — 编译生成 `notes.exe`（可通过环境变量 `APP_VERSION` 指定版本字符串）
-- `build.bat run` — `go run .`，可附加参数，例如：`build.bat run -addr=127.0.0.1:8787`
+- `build.bat run` — `go run .`（配置见当前目录 `notes-config.json`，可用 `-config` 指定路径）
 
 ### 命令行参数
 
 | 参数 | 说明 |
 |------|------|
-| `-addr` | 监听地址。默认 `:8787`（所有网卡）；仅本机可用 `127.0.0.1:8787`；也可只写端口如 `8787` |
-| `-data` | 笔记仓库根目录，默认：可执行文件同目录下的 `notes-vault`；也可指向旧版 `notes-data.json` 以触发一次性迁移 |
-| `-version` | 打印版本后退出 |
+| `-config` | 配置文件路径；省略则为 `<可执行文件目录>/notes-config.json`（`go run` 时为当前目录） |
 | `-service` | `install` / `uninstall` / `start` / `stop` / `restart`（安装服务通常需要管理员权限） |
 | `-svc-name` | 服务内部名称，默认为 `LocalNotes`，与 `install` / `uninstall` 等需一致 |
+
+监听地址与仓库路径仅在 **`notes-config.json`** 中配置：`listen`（如 `:8787`、`127.0.0.1:8787`）、`data`（仓库目录，空则默认可执行文件旁的 `notes-vault`；可为旧版 `notes-data.json` 路径）。安装为 Windows 服务时仅写入 `-config=...`，修改监听或仓库后改 JSON 并重启服务即可。
 
 ### 数据目录结构
 

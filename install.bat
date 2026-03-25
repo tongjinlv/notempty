@@ -1,1 +1,1 @@
-notes.exe -service install -svc-name LocalNotes -addr=:8787
+notes.exe -service install -svc-name LocalNotes
