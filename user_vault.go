@@ -43,9 +43,9 @@ func requireOAuthReady(auth *authBundle) gin.HandlerFunc {
 	}
 }
 
-// userVaultSegment 将 GitHub login 转为安全的单级目录名（小写，非法字符为 _）。
-func userVaultSegment(login string) string {
-	s := strings.TrimSpace(strings.ToLower(login))
+// userVaultSegment 将 provider/login 转为安全的单级目录名（小写，非法字符为 _）。
+func userVaultSegment(raw string) string {
+	s := strings.TrimSpace(strings.ToLower(raw))
 	if s == "" || s == "." || s == ".." {
 		return "_invalid"
 	}
@@ -70,6 +70,14 @@ func userVaultSegment(login string) string {
 	return out
 }
 
+func userVaultProvider(provider string) string {
+	p := strings.TrimSpace(strings.ToLower(provider))
+	if p == "github" || p == "gitee" {
+		return p
+	}
+	return "github"
+}
+
 // requireAuthAndUserVault 校验会话并在上下文中放入该用户专属的 *Vault（根目录为 <vaultBase>/users/<segment>/）。
 func requireAuthAndUserVault(vaultBase string, auth *authBundle) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -92,8 +100,9 @@ func requireAuthAndUserVault(vaultBase string, auth *authBundle) gin.HandlerFunc
 			c.Abort()
 			return
 		}
+		prov := userVaultProvider(p.Provider)
 		seg := userVaultSegment(p.Login)
-		dir := filepath.Join(vaultBase, "users", seg)
+		dir := filepath.Join(vaultBase, "users", prov, seg)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "无法创建用户笔记目录"})
 			c.Abort()

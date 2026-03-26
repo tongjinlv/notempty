@@ -169,6 +169,7 @@ func registerGiteeOAuthRoutes(r gin.IRoutes, g *giteeAuth) {
 
 		sess := sessionPayload{
 			ID:        u.ID,
+			Provider:  "gitee",
 			Login:     u.Login,
 			Name:      u.Name,
 			AvatarURL: u.AvatarURL,

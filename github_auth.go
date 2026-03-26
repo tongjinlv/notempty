@@ -83,6 +83,7 @@ func validateGitHubOAuth(c GitHubOAuthConfig) error {
 
 type sessionPayload struct {
 	ID        int64  `json:"id"`
+	Provider  string `json:"provider,omitempty"`
 	Login     string `json:"login"`
 	Name      string `json:"name"`
 	AvatarURL string `json:"avatarUrl"`
@@ -235,6 +236,7 @@ func registerGitHubOAuthRoutes(r gin.IRoutes, gh *githubAuth) {
 
 		sess := sessionPayload{
 			ID:        u.ID,
+			Provider:  "github",
 			Login:     u.Login,
 			Name:      u.Name,
 			AvatarURL: u.AvatarURL,

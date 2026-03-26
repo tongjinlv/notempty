@@ -560,7 +560,7 @@ func main() {
 				}
 			}
 			if !hasUserNotes {
-				log.Printf("提示: 在 %s 根下检测到旧版笔记数据；多用户模式下笔记应在 users/<GitHub登录>/ 下，请自行迁移或备份后移动目录。", vaultBase)
+				log.Printf("提示: 在 %s 根下检测到旧版笔记数据；多用户模式下笔记应在 users/<provider>/<登录名>/ 下，请自行迁移或备份后移动目录。", vaultBase)
 			}
 		}
 	}
@@ -596,7 +596,7 @@ func main() {
 	}
 
 	log.Printf("配置: %s", cfgFile)
-	log.Printf("Markdown 仓库根: %s/users/<登录名>/（其下 YYYY/MM/DD/<id>/note.md）", vaultBase)
+	log.Printf("Markdown 仓库根: %s/users/<provider>/<登录名>/（其下 YYYY/MM/DD/<id>/note.md）", vaultBase)
 	if auth.github != nil && auth.github.enabled() {
 		log.Println("GitHub 登录已就绪（OAuth 应用的 callbackUrl 须与配置完全一致）")
 	}

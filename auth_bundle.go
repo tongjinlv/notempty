@@ -74,11 +74,19 @@ func (b *authBundle) sessionFromRequest(c *gin.Context) (*sessionPayload, bool) 
 	}
 	if b.github != nil && b.github.enabled() {
 		if p, ok := parseSessionWithSecret(v, b.github.cfg.CookieSecret); ok {
+			if strings.TrimSpace(p.Provider) == "" {
+				p.Provider = "github"
+			}
 			return p, true
 		}
 	}
 	if b.gitee != nil && b.gitee.enabled() {
-		return parseSessionWithSecret(v, b.gitee.cfg.CookieSecret)
+		if p, ok := parseSessionWithSecret(v, b.gitee.cfg.CookieSecret); ok {
+			if strings.TrimSpace(p.Provider) == "" {
+				p.Provider = "gitee"
+			}
+			return p, true
+		}
 	}
 	return nil, false
 }
@@ -104,6 +112,7 @@ func handleAuthStatus(b *authBundle) gin.HandlerFunc {
 				"githubOAuth": ghOn,
 				"giteeOAuth":  giteeOn,
 				"user": gin.H{
+					"provider":  p.Provider,
 					"login":     p.Login,
 					"name":      p.Name,
 					"avatarUrl": p.AvatarURL,
