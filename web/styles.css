@@ -414,7 +414,7 @@ body {
 }
 
 .auth-gate-panel {
-  max-width: 22rem;
+  max-width: min(22rem, calc(100vw - 2rem));
   margin: 1rem;
   padding: 1.5rem;
   border-radius: var(--radius);
@@ -438,7 +438,38 @@ body {
   line-height: 1.45;
 }
 
-.auth-github-btn {
+.auth-gate-buttons {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+}
+
+.auth-gate-buttons .auth-oauth-btn {
+  width: 100%;
+  max-width: 15rem;
+  justify-content: center;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  padding: 0.45rem 0.85rem;
+}
+
+/* 与 GitHub 主按钮同形，仅配色为 Gitee 红 */
+.auth-gate-buttons .auth-oauth-btn-gitee {
+  background: #c71d23;
+  color: #fff;
+}
+
+.auth-gate-buttons .auth-oauth-btn-gitee:hover {
+  background: #a9181e;
+}
+
+[data-theme="dark"] .auth-gate-buttons .auth-oauth-btn-gitee {
+  color: #fff;
+}
+
+.auth-oauth-btn {
   display: inline-flex;
   text-decoration: none;
   justify-content: center;

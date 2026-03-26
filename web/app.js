@@ -51,11 +51,15 @@
   let virtualListScrollRaf = 0;
   let authConfigured = false;
   let authEnabled = false;
+  /** @type {boolean | undefined} */
+  let authGitHubOAuth = false;
+  /** @type {boolean | undefined} */
+  let authGiteeOAuth = false;
   /** @type {{ login: string, name?: string, avatarUrl?: string } | null} */
   let authUser = null;
 
   function noteCountWhenNoNotes() {
-    if (!authConfigured) return "配置 githubOAuth 并重启服务后可用";
+    if (!authConfigured) return "配置 githubOAuth 或 giteeOAuth 并重启服务后可用";
     if (authEnabled && !authUser) return "登录后加载笔记";
     return "暂无笔记";
   }
@@ -79,10 +83,14 @@
       const j = await r.json();
       authConfigured = !!j.configured;
       authEnabled = !!j.enabled;
+      authGitHubOAuth = j.githubOAuth === true;
+      authGiteeOAuth = j.giteeOAuth === true;
       authUser = j.user && typeof j.user === "object" ? j.user : null;
     } catch {
       authConfigured = false;
       authEnabled = false;
+      authGitHubOAuth = false;
+      authGiteeOAuth = false;
       authUser = null;
     }
     applyAuthUI();
@@ -96,15 +104,19 @@
     const hintLogin = document.getElementById("auth-gate-hint-login");
 
     if (!authConfigured) {
+      const btnGhEarly = document.getElementById("btn-github-login");
+      const btnGiteeEarly = document.getElementById("btn-gitee-login");
+      if (btnGhEarly) btnGhEarly.classList.remove("hidden");
+      if (btnGiteeEarly) btnGiteeEarly.classList.remove("hidden");
       if (gate) gate.classList.remove("hidden");
-      if (titleEl) titleEl.textContent = "尚未配置 GitHub 登录";
+      if (titleEl) titleEl.textContent = "尚未配置 OAuth 登录";
       if (configEl) {
         configEl.textContent =
-          "请在 notes-config.json 中添加 githubOAuth（clientId、clientSecret、callbackUrl、cookieSecret），保存后重启本程序。";
+          "请在 notes-config.json 中添加 githubOAuth 和/或 giteeOAuth（clientId、clientSecret、callbackUrl、cookieSecret），保存后重启本程序。";
         configEl.classList.remove("hidden");
       }
       if (hintLogin) {
-        hintLogin.textContent = "配置并重启后，点下面按钮会跳转到 GitHub（未配置时会先看到说明页）。";
+        hintLogin.textContent = "配置并重启后，点下面按钮会跳转到 GitHub 或 Gitee（未配置时会先看到说明页）。";
         hintLogin.classList.remove("hidden");
       }
       if (!bar) return;
@@ -118,10 +130,15 @@
       configEl.classList.add("hidden");
     }
     if (hintLogin) {
-      hintLogin.textContent = "点击下方按钮将跳转到 GitHub 授权，完成后会回到本页。";
+      hintLogin.textContent = "点击下方按钮将跳转到 GitHub 或 Gitee 授权，完成后会回到本页。";
       hintLogin.classList.remove("hidden");
     }
     if (titleEl) titleEl.textContent = "需要登录后才能使用笔记";
+
+    const btnGh = document.getElementById("btn-github-login");
+    const btnGitee = document.getElementById("btn-gitee-login");
+    if (btnGh) btnGh.classList.toggle("hidden", authConfigured && !authGitHubOAuth);
+    if (btnGitee) btnGitee.classList.toggle("hidden", authConfigured && !authGiteeOAuth);
 
     if (gate) gate.classList.toggle("hidden", !(!authUser));
     if (!bar) return;
@@ -1012,9 +1029,13 @@
     flushEditorKeepalive();
   });
 
-  /** 整页跳转授权：比弹窗更稳，避免小窗里 GitHub 页加载慢、被拦截或脚本异常。 */
+  /** 整页跳转授权：比弹窗更稳，避免小窗里 OAuth 页加载慢、被拦截或脚本异常。 */
   function startGitHubLogin() {
     window.location.assign("/auth/github/start");
+  }
+
+  function startGiteeLogin() {
+    window.location.assign("/auth/gitee/start");
   }
 
   document.getElementById("auth-gate")?.addEventListener("click", (e) => {
@@ -1022,12 +1043,16 @@
       e.preventDefault();
       startGitHubLogin();
     }
+    if (e.target && e.target.id === "btn-gitee-login") {
+      e.preventDefault();
+      startGiteeLogin();
+    }
   });
 
   window.addEventListener("message", (ev) => {
     if (ev.origin !== window.location.origin) return;
     const d = ev.data;
-    if (!d || d.type !== "notes-github-oauth") return;
+    if (!d || (d.type !== "notes-oauth" && d.type !== "notes-github-oauth")) return;
     if (d.ok) {
       refreshAuth().then(async () => {
         if (authConfigured && authUser) {

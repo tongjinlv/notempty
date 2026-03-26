@@ -252,7 +252,7 @@ func checkListenAddr(addr string) error {
 	return ln.Close()
 }
 
-func buildRouter(vaultBase string, webRoot fs.FS, gh *githubAuth) http.Handler {
+func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.MaxMultipartMemory = maxImageUpload
@@ -261,13 +261,15 @@ func buildRouter(vaultBase string, webRoot fs.FS, gh *githubAuth) http.Handler {
 	r.HandleMethodNotAllowed = false
 	r.Use(gin.Recovery())
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
-		SkipPaths: []string{"/", "/styles.css", "/app.js", "/favicon.svg", "/favicon.ico", "/api/auth/status", "/auth/github/callback"},
+		SkipPaths: []string{"/", "/styles.css", "/app.js", "/favicon.svg", "/favicon.ico", "/api/auth/status", "/auth/github/callback", "/auth/gitee/callback"},
 	}))
 
-	r.GET("/api/auth/status", handleAuthStatus(gh))
-	registerAuthRoutes(r, gh)
+	r.GET("/api/auth/status", handleAuthStatus(auth))
+	registerGitHubOAuthRoutes(r, auth.github)
+	registerGiteeOAuthRoutes(r, auth.gitee)
+	registerLogoutRoute(r, auth)
 
-	api := r.Group("/api", requireGitHubOAuthReady(gh), requireAuthAndUserVault(vaultBase, gh))
+	api := r.Group("/api", requireOAuthReady(auth), requireAuthAndUserVault(vaultBase, auth))
 	registerVaultAPI(api)
 
 	api.GET("/notes", func(c *gin.Context) {
@@ -380,7 +382,7 @@ type program struct {
 	addr      string
 	vaultBase string
 	web       fs.FS
-	github    *githubAuth
+	auth      *authBundle
 	srv       *http.Server
 }
 
@@ -426,7 +428,7 @@ func (consoleLogger) Errorf(format string, args ...interface{}) error {
 
 func (p *program) Start(s service.Service) error {
 	lg := appLog(s)
-	handler := buildRouter(p.vaultBase, p.web, p.github)
+	handler := buildRouter(p.vaultBase, p.web, p.auth)
 	p.srv = &http.Server{
 		Addr:    p.addr,
 		Handler: handler,
@@ -455,8 +457,8 @@ func (p *program) Stop(s service.Service) error {
 	return nil
 }
 
-func runHTTPServerForeground(addr string, vaultBase string, webRoot fs.FS, gh *githubAuth) error {
-	handler := buildRouter(vaultBase, webRoot, gh)
+func runHTTPServerForeground(addr string, vaultBase string, webRoot fs.FS, auth *authBundle) error {
+	handler := buildRouter(vaultBase, webRoot, auth)
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: handler,
@@ -515,7 +517,24 @@ func main() {
 			gh = &githubAuth{cfg: gc}
 		}
 	} else {
-		log.Printf("提示: 未配置 githubOAuth，服务已启动；在 notes-config.json 中填写并重启后即可 GitHub 登录。")
+		log.Printf("提示: 未配置 githubOAuth。")
+	}
+
+	var gitee *giteeAuth
+	if fileCfg.GiteeOAuth != nil {
+		gc := normalizeGiteeOAuth(*fileCfg.GiteeOAuth)
+		if err := validateGiteeOAuth(gc); err != nil {
+			log.Printf("提示: giteeOAuth 未填全或无效，服务已启动但无法登录（%v）", err)
+		} else {
+			gitee = &giteeAuth{cfg: gc}
+		}
+	} else {
+		log.Printf("提示: 未配置 giteeOAuth。")
+	}
+
+	auth := &authBundle{github: gh, gitee: gitee}
+	if !auth.oauthReady() {
+		log.Printf("提示: 未配置有效的 githubOAuth 或 giteeOAuth，服务已启动；在 notes-config.json 中填写并重启后即可登录。")
 	}
 
 	vaultBase, legacyJSON := computeVaultRoot(resolveDataPathForConfig(fileCfg.Data))
@@ -562,7 +581,7 @@ func main() {
 		addr:      listenAddr,
 		vaultBase: vaultBase,
 		web:       webRoot,
-		github:    gh,
+		auth:      auth,
 	}
 
 	if *svcFlag != "" {
@@ -577,9 +596,12 @@ func main() {
 	}
 
 	log.Printf("配置: %s", cfgFile)
-	log.Printf("Markdown 仓库根: %s/users/<GitHub登录>/（其下 YYYY/MM/DD/<id>/note.md）", vaultBase)
-	if gh != nil {
-		log.Println("GitHub 登录已就绪（OAuth App 的 callbackUrl 须与配置完全一致）")
+	log.Printf("Markdown 仓库根: %s/users/<登录名>/（其下 YYYY/MM/DD/<id>/note.md）", vaultBase)
+	if auth.github != nil && auth.github.enabled() {
+		log.Println("GitHub 登录已就绪（OAuth 应用的 callbackUrl 须与配置完全一致）")
+	}
+	if auth.gitee != nil && auth.gitee.enabled() {
+		log.Println("Gitee 登录已就绪（第三方应用的回调地址须与配置完全一致）")
 	}
 	log.Printf("监听: %s | 在浏览器打开: %s", listenAddr, browserOpenURL(listenAddr))
 	if bindsBroad(listenAddr) {
@@ -594,7 +616,7 @@ func main() {
 		)
 	}
 	if service.Interactive() {
-		if err := runHTTPServerForeground(listenAddr, vaultBase, webRoot, gh); err != nil {
+		if err := runHTTPServerForeground(listenAddr, vaultBase, webRoot, auth); err != nil {
 			log.Fatal(err)
 		}
 		return

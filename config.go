@@ -18,11 +18,21 @@ type GitHubOAuthConfig struct {
 	AllowedLogins []string `json:"allowedLogins"`
 }
 
+// GiteeOAuthConfig 与 GitHub 字段相同；在 Gitee 创建第三方应用，回调填 /auth/gitee/callback。
+type GiteeOAuthConfig struct {
+	ClientID      string   `json:"clientId"`
+	ClientSecret  string   `json:"clientSecret"`
+	CallbackURL   string   `json:"callbackUrl"`
+	CookieSecret  string   `json:"cookieSecret"`
+	AllowedLogins []string `json:"allowedLogins"`
+}
+
 // appConfig 对应 notes-config.json；缺省 listen 为 :8787。
 type appConfig struct {
 	Listen      string             `json:"listen"`
 	Data        string             `json:"data"`
 	GitHubOAuth *GitHubOAuthConfig `json:"githubOAuth"`
+	GiteeOAuth  *GiteeOAuthConfig  `json:"giteeOAuth"`
 }
 
 func defaultAppConfig() appConfig {
