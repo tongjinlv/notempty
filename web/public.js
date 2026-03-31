@@ -9,8 +9,12 @@
   }
 
   const root = document.getElementById("public-root");
-  /** @type {unknown[]} */
-  let allPosts = [];
+  const LIST_LIMIT = 24;
+
+  let nextCursor = "";
+  let hasMore = false;
+  let totalAll = 0;
+  let loadedCount = 0;
   let searchDebounce = 0;
 
   function escapeHtml(s) {
@@ -146,42 +150,9 @@
     return t.slice(0, max) + "…";
   }
 
-  function plainTextForSearch(body) {
-    return String(body || "")
-      .replace(/```[\s\S]*?```/g, " ")
-      .replace(/!\[[^\]]*\]\([^)]+\)/g, " ")
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      .replace(/[#>*`_]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .toLowerCase();
-  }
-
-  function searchTokens(q) {
-    return String(q || "")
-      .trim()
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(Boolean);
-  }
-
-  function postMatchesQuery(post, tokens) {
-    if (!tokens.length) return true;
-    const title = String(post.title || "").toLowerCase();
-    const body = plainTextForSearch(post.body);
-    const author = String(post.authorLabel || "").toLowerCase();
-    return tokens.every((t) => title.includes(t) || body.includes(t) || author.includes(t));
-  }
-
-  function filterPosts(posts, q) {
-    const tokens = searchTokens(q);
-    return posts.filter((p) => postMatchesQuery(p, tokens));
-  }
-
-  function renderListItems(posts) {
-    if (!posts.length) return "";
+  function renderListItemsLisOnly(posts) {
+    if (!posts || !posts.length) return "";
     const h = [];
-    h.push('<ul class="public-post-list">');
     for (const p of posts) {
       const title = escapeHtml(p.title || "无标题");
       const url = escapeAttr(p.detailUrl || "#");
@@ -195,79 +166,111 @@
       h.push('<p class="public-post-excerpt">' + ex + "</p>");
       h.push("</article></li>");
     }
-    h.push("</ul>");
     return h.join("");
   }
 
-  function resultMetaHtml(total, shown, qRaw) {
+  function resultMetaHtml(qRaw) {
     const q = String(qRaw || "").trim();
-    if (!total) {
-      return '<p class="public-result-meta">暂无可展示的公开笔记。</p>';
+    if (!totalAll) {
+      if (q) {
+        return (
+          '<p class="public-result-meta" id="public-result-meta">没有找到匹配「<strong>' +
+          escapeHtml(q) +
+          "</strong>」的公开手记。</p>"
+        );
+      }
+      return '<p class="public-result-meta" id="public-result-meta">暂无可展示的公开笔记。</p>';
     }
-    if (!q) {
-      return '<p class="public-result-meta">共 <strong>' + total + "</strong> 篇手记</p>";
+    let line =
+      '<p class="public-result-meta" id="public-result-meta">共 <strong>' +
+      totalAll +
+      "</strong> 篇";
+    if (q) {
+      line += ' · 关键词「<strong>' + escapeHtml(q) + "</strong>」";
     }
-    if (shown === 0) {
-      return (
-        '<p class="public-result-meta public-result-meta-empty">没有匹配「<strong>' +
-        escapeHtml(q) +
-        "</strong>」的手记（共 " +
-        total +
-        " 篇）</p>"
-      );
+    line += ' · 已加载 <strong>' + loadedCount + "</strong> 篇";
+    if (hasMore) {
+      line += " · 可继续加载更多";
+    } else {
+      line += " · 已全部加载";
     }
-    return (
-      '<p class="public-result-meta">找到 <strong>' +
-      shown +
-      "</strong> 篇（共 " +
-      total +
-      " 篇）· 关键词含空格时表示需同时包含多个词</p>"
-    );
+    line += "</p>";
+    return line;
   }
 
-  function renderListMount(all, filtered, q) {
-    const total = all.length;
-    const shown = filtered.length;
-    const meta = resultMetaHtml(total, shown, q);
-    const listHtml = renderListItems(filtered);
-    let bodyHtml = meta;
-    if (total && shown === 0) {
-      bodyHtml +=
-        '<p class="public-empty-hint">试试缩短关键词，或<a href="/public">清空搜索</a>。</p>';
-    } else if (listHtml) {
-      bodyHtml += listHtml;
+  function refreshListMeta(q) {
+    const el = document.getElementById("public-result-meta");
+    if (el) el.outerHTML = resultMetaHtml(q);
+  }
+
+  function updateLoadMoreButton() {
+    const btn = document.getElementById("public-load-more");
+    if (btn) {
+      btn.hidden = !hasMore || totalAll === 0;
+      btn.disabled = false;
     }
-    return bodyHtml;
   }
 
-  function renderListPage(all, q) {
-    const filtered = filterPosts(all, q);
-    const qAttr = escapeAttr(q);
-    const mountHtml = renderListMount(all, filtered, q);
-    root.innerHTML =
-      '<div class="public-shell-inner">' +
-      '<header class="public-hero">' +
-      '<h1 class="public-blog-title">公共手记</h1>' +
-      '<p class="public-blog-sub">由作者主动公开的笔记聚合于此；支持按标题、正文与作者行搜索，多个词用空格连接表示同时包含。</p>' +
-      '<div class="public-search-wrap">' +
-      '<label class="sr-only" for="public-search">搜索公开手记</label>' +
-      '<input type="search" id="public-search" class="public-search-input" placeholder="搜索标题、正文、作者…" autocomplete="off" value="' +
-      qAttr +
-      '" />' +
-      "</div>" +
-      '<nav class="public-blog-nav" aria-label="站点导航"><a href="/">我的笔记</a></nav>' +
-      "</header>" +
-      '<div class="public-list-section" id="public-list-mount">' +
-      mountHtml +
-      "</div>" +
-      "</div>";
+  async function fetchListJson(q, cursor) {
+    const params = new URLSearchParams({ limit: String(LIST_LIMIT) });
+    const qv = String(q || "").trim();
+    if (qv) params.set("q", qv);
+    if (cursor) params.set("cursor", cursor);
+    const r = await fetch("/api/public/posts?" + params.toString(), { credentials: "same-origin" });
+    if (!r.ok) throw new Error(String(r.status));
+    return r.json();
   }
 
-  function updateListMount(all, q) {
+  async function fetchDetailJson(provider, login, dir) {
+    const params = new URLSearchParams({ provider, login, dir });
+    const r = await fetch("/api/public/post?" + params.toString(), { credentials: "same-origin" });
+    if (!r.ok) throw new Error(String(r.status));
+    return r.json();
+  }
+
+  async function loadFirstPage(q) {
+    const j = await fetchListJson(q, null);
+    const items = Array.isArray(j.items) ? j.items : [];
+    nextCursor = j.nextCursor || "";
+    hasMore = !!j.hasMore;
+    totalAll = typeof j.total === "number" ? j.total : items.length;
+    loadedCount = items.length;
+
     const mount = document.getElementById("public-list-mount");
     if (!mount) return;
-    const filtered = filterPosts(all, q);
-    mount.innerHTML = renderListMount(all, filtered, q);
+    let inner = resultMetaHtml(q);
+    if (items.length) {
+      inner +=
+        '<ul class="public-post-list" id="public-post-list">' + renderListItemsLisOnly(items) + "</ul>";
+    } else if (!String(q || "").trim() && totalAll === 0) {
+      inner += '<p class="public-empty-hint">尚无作者勾选「在公共主页展示」。</p>';
+    } else if (String(q || "").trim() && totalAll === 0) {
+      inner += '<p class="public-empty-hint">试试缩短关键词，或<a href="/public">清空搜索</a>。</p>';
+    }
+    mount.innerHTML = inner;
+    document.getElementById("public-load-more-wrap")?.classList.remove("hidden");
+    updateLoadMoreButton();
+  }
+
+  async function loadMorePage(q) {
+    if (!hasMore || !nextCursor) return;
+    const btn = document.getElementById("public-load-more");
+    if (btn) btn.disabled = true;
+    try {
+      const j = await fetchListJson(q, nextCursor);
+      const items = Array.isArray(j.items) ? j.items : [];
+      nextCursor = j.nextCursor || "";
+      hasMore = !!j.hasMore;
+      loadedCount += items.length;
+      const ul = document.getElementById("public-post-list");
+      if (ul && items.length) {
+        ul.insertAdjacentHTML("beforeend", renderListItemsLisOnly(items));
+      }
+      refreshListMeta(q);
+      updateLoadMoreButton();
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   function syncSearchUrl(q) {
@@ -280,6 +283,32 @@
     if (next !== location.pathname + location.search) {
       history.replaceState(null, "", next);
     }
+  }
+
+  function renderListShell(q) {
+    const qAttr = escapeAttr(q);
+    root.innerHTML =
+      '<div class="public-shell-inner">' +
+      '<header class="public-hero">' +
+      '<div class="public-hero-top">' +
+      '<h1 class="public-blog-title">公共手记</h1>' +
+      '<nav class="public-blog-nav public-hero-top-nav" aria-label="站点导航"><a href="/">我的笔记</a></nav>' +
+      "</div>" +
+      '<p class="public-blog-sub">数据由服务端分页与搜索；列表仅返回摘要正文，点标题进入全文。多词用空格连接表示同时包含。</p>' +
+      '<div class="public-search-wrap">' +
+      '<label class="sr-only" for="public-search">搜索公开手记</label>' +
+      '<input type="search" id="public-search" class="public-search-input" placeholder="搜索标题、正文、作者…" autocomplete="off" value="' +
+      qAttr +
+      '" />' +
+      "</div>" +
+      "</header>" +
+      '<div class="public-list-section">' +
+      '<div id="public-list-mount"><p class="public-loading">加载中…</p></div>' +
+      '<div class="public-load-more-wrap hidden" id="public-load-more-wrap">' +
+      '<button type="button" class="btn btn-primary public-load-more-btn" id="public-load-more" hidden>加载更多</button>' +
+      "</div>" +
+      "</div>" +
+      "</div>";
   }
 
   function renderDetail(post) {
@@ -317,55 +346,81 @@
     const el = ev.target;
     if (!el || el.id !== "public-search") return;
     clearTimeout(searchDebounce);
-    searchDebounce = setTimeout(() => {
+    searchDebounce = setTimeout(async () => {
       const q = el.value;
       syncSearchUrl(q);
-      updateListMount(allPosts, q);
-    }, 200);
+      try {
+        await loadFirstPage(q);
+      } catch {
+        const mount = document.getElementById("public-list-mount");
+        if (mount) mount.innerHTML = '<p class="public-error">加载失败，请稍后重试。</p>';
+      }
+    }, 220);
   }
 
   document.addEventListener("input", onSearchInput);
 
-  window.addEventListener("popstate", () => {
+  document.addEventListener("click", (e) => {
+    const t = e.target;
+    if (t && t.id === "public-load-more") {
+      const inp = document.getElementById("public-search");
+      const q = inp ? inp.value : "";
+      loadMorePage(q);
+    }
+  });
+
+  window.addEventListener("popstate", async () => {
     const path = location.pathname.replace(/\/$/, "") || "/public";
     if (path !== "/public") return;
     const q = new URLSearchParams(location.search).get("q") || "";
     const inp = document.getElementById("public-search");
     if (inp) inp.value = q;
-    updateListMount(allPosts, q);
+    try {
+      await loadFirstPage(q);
+    } catch {
+      /* ignore */
+    }
   });
 
   async function main() {
     if (!root) return;
-    let posts;
-    try {
-      const r = await fetch("/api/public/posts", { credentials: "same-origin" });
-      if (!r.ok) throw new Error(String(r.status));
-      posts = await r.json();
-    } catch {
-      root.innerHTML =
-        '<div class="public-shell-inner"><p class="public-error">无法加载公共手记列表，请稍后再试。</p><p class="public-blog-nav"><a href="/">返回</a></p></div>';
-      return;
-    }
-    if (!Array.isArray(posts)) posts = [];
-    allPosts = posts;
-
     const path = location.pathname.replace(/\/$/, "") || "/public";
+
+    if (path.startsWith("/public/post/")) {
+      const rest = path.slice("/public/post/".length);
+      const parts = rest.split("/").filter(Boolean);
+      if (parts.length >= 5) {
+        const provider = parts[0];
+        const login = parts[1];
+        const dir = parts.slice(2).join("/");
+        try {
+          const detail = await fetchDetailJson(provider, login, dir);
+          renderDetail(detail);
+          document.title = (detail.title || "手记") + " · 公共手记";
+        } catch {
+          root.innerHTML =
+            '<div class="public-shell-inner"><p class="public-error">未找到该手记或已不再公开。</p><p class="public-blog-nav"><a href="/public">返回列表</a></p></div>';
+          document.title = "手记未找到";
+        }
+        return;
+      }
+    }
+
     if (path === "/public") {
       const q = new URLSearchParams(location.search).get("q") || "";
-      renderListPage(allPosts, q);
+      renderListShell(q);
+      try {
+        await loadFirstPage(q);
+      } catch {
+        const mount = document.getElementById("public-list-mount");
+        if (mount) mount.innerHTML = '<p class="public-error">无法加载公共手记列表，请稍后再试。</p>';
+      }
       document.title = "公共手记";
       return;
     }
-    const detail = posts.find((p) => (p.detailUrl || "").replace(/\/$/, "") === path);
-    if (!detail) {
-      root.innerHTML =
-        '<div class="public-shell-inner"><p class="public-error">未找到该手记或已不再公开。</p><p class="public-blog-nav"><a href="/public">返回列表</a></p></div>';
-      document.title = "手记未找到";
-      return;
-    }
-    renderDetail(detail);
-    document.title = (detail.title || "手记") + " · 公共手记";
+
+    root.innerHTML =
+      '<div class="public-shell-inner"><p class="public-error">页面不存在。</p><p class="public-blog-nav"><a href="/public">返回</a></p></div>';
   }
 
   main();

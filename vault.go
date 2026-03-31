@@ -366,6 +366,7 @@ func (v *Vault) Create(title, body, beforeID string, public bool) (Note, error) 
 		before = ""
 	}
 	v.sidebarInsertUnlocked(id, before)
+	invalidatePublicPostCache()
 	return n, nil
 }
 
@@ -387,6 +388,7 @@ func (v *Vault) Update(id, title, body string, public bool) (Note, error) {
 	if err := os.WriteFile(full, raw, 0o644); err != nil {
 		return Note{}, err
 	}
+	invalidatePublicPostCache()
 	return n, nil
 }
 
@@ -445,6 +447,7 @@ func (v *Vault) Delete(id string) error {
 		return err
 	}
 	v.sidebarRemoveUnlocked(id)
+	invalidatePublicPostCache()
 	return nil
 }
 

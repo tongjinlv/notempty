@@ -939,18 +939,25 @@ body.public-blog-page {
   box-shadow: var(--shadow);
 }
 
-.public-hero-badge {
-  display: inline-block;
-  margin-bottom: 0.65rem;
-  padding: 0.2rem 0.55rem;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--accent);
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+.public-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-bottom: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.public-hero-top .public-blog-title {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.public-hero-top-nav {
+  margin: 0;
+  font-size: 0.88rem;
+  flex-shrink: 0;
 }
 
 .public-blog-title {
@@ -1182,6 +1189,20 @@ body.public-blog-page {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
+}
+
+.public-load-more-wrap {
+  margin-top: 1.35rem;
+  text-align: center;
+}
+
+.public-load-more-wrap.hidden {
+  display: none;
+}
+
+.public-load-more-btn {
+  min-width: 9rem;
+  padding: 0.5rem 1.25rem;
 }
 
 @media (max-width: 520px) {
