@@ -15,7 +15,16 @@
     <aside class="sidebar" id="sidebar" aria-label="笔记列表">
       <header class="sidebar-header">
         <h1 class="logo">
-          <img class="logo-icon" src="/favicon.svg" width="28" height="28" alt="" decoding="async" />
+          <a
+            href="/public"
+            class="logo-public-link"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="公共手记"
+            aria-label="打开公共手记"
+          >
+            <img class="logo-icon" src="/favicon.svg" width="28" height="28" alt="" decoding="async" />
+          </a>
           <span class="logo-text">笔记</span>
         </h1>
         <div class="sidebar-actions">
@@ -74,6 +83,10 @@
           />
           <div class="toolbar-right">
             <span class="saved-hint" id="saved-hint" aria-live="polite"></span>
+            <label class="toolbar-public-opt">
+              <input type="checkbox" id="note-public" />
+              <span>公开</span>
+            </label>
             <button type="button" class="btn btn-danger btn-sm" id="btn-delete">删除</button>
           </div>
         </header>

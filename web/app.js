@@ -9,7 +9,7 @@
   const VIRTUAL_ROW_ESTIMATE_PX = 68;
   const VIRTUAL_OVERSCAN = 8;
 
-  /** @typedef {{ id: string, title: string, body: string, updatedAt: number, dir: string }} Note */
+  /** @typedef {{ id: string, title: string, body: string, updatedAt: number, dir: string, public?: boolean }} Note */
 
   const els = {
     app: document.getElementById("app"),
@@ -31,6 +31,7 @@
     tabPreview: document.getElementById("tab-preview"),
     savedHint: document.getElementById("saved-hint"),
     noteCount: document.getElementById("note-count"),
+    notePublic: document.getElementById("note-public"),
   };
 
   /** @type {Note[]} */
@@ -857,6 +858,7 @@
     activeNoteDir = note.dir || "";
     els.title.value = note.title;
     setBodyText(note.body);
+    if (els.notePublic) els.notePublic.checked = !!note.public;
     setViewMode(startInEdit ? "edit" : "preview");
     showEditor(true);
     els.title.focus();
@@ -874,7 +876,11 @@
       const r = await apiFetch("/api/notes/" + encodeURIComponent(note.id), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, body }),
+        body: JSON.stringify({
+          title,
+          body,
+          public: els.notePublic ? !!els.notePublic.checked : false,
+        }),
       });
       if (!r.ok) {
         setSavedHint("保存失败");
@@ -900,7 +906,11 @@
     fetch("/api/notes/" + encodeURIComponent(note.id), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, body }),
+      body: JSON.stringify({
+        title,
+        body,
+        public: els.notePublic ? !!els.notePublic.checked : false,
+      }),
       keepalive: true,
       credentials: "same-origin",
     }).catch(() => {});
@@ -937,7 +947,7 @@
     const r = await apiFetch("/api/notes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: "", body: "", beforeId }),
+      body: JSON.stringify({ title: "", body: "", beforeId, public: false }),
     });
     if (!r.ok) {
       setSavedHint("创建失败");
@@ -1109,6 +1119,8 @@
       scheduleSave();
     });
   });
+
+  els.notePublic?.addEventListener("change", scheduleSave);
 
   window.addEventListener("beforeunload", () => {
     clearPendingSave();

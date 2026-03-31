@@ -20,17 +20,19 @@ import (
 
 // Note 与前端 JSON 对齐；Dir 为相对 vault 的路径，如 2026/03/24/n_xxx（正斜杠）
 type Note struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Body      string `json:"body"`
-	UpdatedAt int64  `json:"updatedAt"`
-	Dir       string `json:"dir"`
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Body       string `json:"body"`
+	UpdatedAt  int64  `json:"updatedAt"`
+	Dir        string `json:"dir"`
+	Public bool `json:"public"`
 }
 
 type noteFM struct {
-	ID      string `yaml:"id"`
-	Title   string `yaml:"title"`
+	ID         string `yaml:"id"`
+	Title      string `yaml:"title"`
 	Updated string `yaml:"updated"`
+	Public  bool   `yaml:"public"`
 }
 
 type legacyFile struct {
@@ -118,6 +120,7 @@ func parseNoteMD(raw []byte, folderID string, modTime time.Time) (Note, error) {
 	} else {
 		n.UpdatedAt = modTime.UnixMilli()
 	}
+	n.Public = fm.Public
 	n.Body = string(body)
 	return n, nil
 }
@@ -127,6 +130,7 @@ func composeNoteMD(n Note, updated time.Time) ([]byte, error) {
 		ID:      n.ID,
 		Title:   n.Title,
 		Updated: updated.UTC().Format(time.RFC3339),
+		Public:  n.Public,
 	}
 	head, err := yaml.Marshal(fm)
 	if err != nil {
@@ -332,7 +336,7 @@ func (v *Vault) List() ([]Note, error) {
 	return v.applySidebarOrderUnlocked(notes, order), nil
 }
 
-func (v *Vault) Create(title, body, beforeID string) (Note, error) {
+func (v *Vault) Create(title, body, beforeID string, public bool) (Note, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -349,7 +353,7 @@ func (v *Vault) Create(title, body, beforeID string) (Note, error) {
 	if err := os.MkdirAll(full, 0o755); err != nil {
 		return Note{}, err
 	}
-	n := Note{ID: id, Title: title, Body: body, UpdatedAt: t.UnixMilli(), Dir: dirRel}
+	n := Note{ID: id, Title: title, Body: body, UpdatedAt: t.UnixMilli(), Dir: dirRel, Public: public}
 	raw, err := composeNoteMD(n, t)
 	if err != nil {
 		return Note{}, err
@@ -365,7 +369,7 @@ func (v *Vault) Create(title, body, beforeID string) (Note, error) {
 	return n, nil
 }
 
-func (v *Vault) Update(id, title, body string) (Note, error) {
+func (v *Vault) Update(id, title, body string, public bool) (Note, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -374,7 +378,7 @@ func (v *Vault) Update(id, title, body string) (Note, error) {
 		return Note{}, err
 	}
 	t := time.Now()
-	n := Note{ID: id, Title: title, Body: body, UpdatedAt: t.UnixMilli(), Dir: dirRel}
+	n := Note{ID: id, Title: title, Body: body, UpdatedAt: t.UnixMilli(), Dir: dirRel, Public: public}
 	raw, err := composeNoteMD(n, t)
 	if err != nil {
 		return Note{}, err

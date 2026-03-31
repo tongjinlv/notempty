@@ -261,8 +261,11 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 	r.HandleMethodNotAllowed = false
 	r.Use(gin.Recovery())
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
-		SkipPaths: []string{"/", "/styles.css", "/app.js", "/favicon.svg", "/favicon.ico", "/api/auth/status", "/auth/github/callback", "/auth/gitee/callback", "/vendor/easymde/easymde.min.css", "/vendor/easymde/easymde.min.js"},
+		SkipPaths: []string{"/", "/styles.css", "/app.js", "/favicon.svg", "/favicon.ico", "/api/auth/status", "/auth/github/callback", "/auth/gitee/callback", "/vendor/easymde/easymde.min.css", "/vendor/easymde/easymde.min.js", "/public", "/public/", "/public.js", "/api/public/posts"},
 	}))
+
+	registerPublicAPI(r, vaultBase)
+	registerPublicWeb(r, webRoot)
 
 	r.GET("/api/auth/status", handleAuthStatus(auth))
 	registerGitHubOAuthRoutes(r, auth.github)
@@ -286,13 +289,14 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 		Title    string `json:"title"`
 		Body     string `json:"body"`
 		BeforeID string `json:"beforeId"`
+		Public   bool   `json:"public"`
 	}
 
 	api.POST("/notes", func(c *gin.Context) {
 		v := mustCtxVault(c)
 		var wb writeBody
 		_ = c.ShouldBindJSON(&wb)
-		n, err := v.Create(wb.Title, wb.Body, wb.BeforeID)
+		n, err := v.Create(wb.Title, wb.Body, wb.BeforeID, wb.Public)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -308,7 +312,7 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 			return
 		}
-		n, err := v.Update(id, wb.Title, wb.Body)
+		n, err := v.Update(id, wb.Title, wb.Body, wb.Public)
 		if err != nil {
 			if err == os.ErrNotExist {
 				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
