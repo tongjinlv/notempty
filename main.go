@@ -261,11 +261,10 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 	r.HandleMethodNotAllowed = false
 	r.Use(gin.Recovery())
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
-		SkipPaths: []string{"/", "/styles.css", "/app.js", "/favicon.svg", "/favicon.ico", "/api/auth/status", "/auth/github/callback", "/auth/gitee/callback", "/vendor/easymde/easymde.min.css", "/vendor/easymde/easymde.min.js", "/public", "/public/", "/public.js", "/api/public/posts", "/api/md/render", "/api/public/render-md"},
+		SkipPaths: []string{"/", "/styles.css", "/app.js", "/favicon.svg", "/favicon.ico", "/api/auth/status", "/auth/github/callback", "/auth/gitee/callback", "/vendor/easymde/easymde.min.css", "/vendor/easymde/easymde.min.js", "/public", "/public/", "/public.js", "/api/public/posts"},
 	}))
 
 	registerPublicAPI(r, vaultBase)
-	registerPublicMarkdownRender(r)
 	registerPublicWeb(r, webRoot)
 
 	r.GET("/api/auth/status", handleAuthStatus(auth))
@@ -275,7 +274,6 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 
 	api := r.Group("/api", requireOAuthReady(auth), requireAuthAndUserVault(vaultBase, auth))
 	registerVaultAPI(api)
-	registerMarkdownAPI(api)
 
 	api.GET("/notes", func(c *gin.Context) {
 		v := mustCtxVault(c)

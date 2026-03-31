@@ -89,8 +89,7 @@
     return s;
   }
 
-  /** 公共页渲染失败时的简易 HTML（无 GFM） */
-  function renderMarkdownFallback(text) {
+  function renderMarkdown(text) {
     if (!String(text).trim()) {
       return '<p class="md-empty">（无内容）</p>';
     }
@@ -128,17 +127,6 @@
       flushPara();
     }
     return html;
-  }
-
-  async function renderMarkdownServer(text) {
-    const r = await fetch("/api/public/render-md", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text || "" }),
-      credentials: "same-origin",
-    });
-    if (!r.ok) throw new Error(String(r.status));
-    return r.json();
   }
 
   function formatTime(ms) {
@@ -323,7 +311,7 @@
       "</div>";
   }
 
-  async function renderDetail(post) {
+  function renderDetail(post) {
     const title = escapeHtml(post.title || "无标题");
     const by = escapeHtml(post.authorLabel || "");
     const when = escapeHtml(formatTime(post.updatedAt));
@@ -349,22 +337,9 @@
     h.push('<p class="public-post-byline">' + by + " · " + when + "</p>");
     h.push("</div>");
     h.push("</header>");
-    h.push('<article class="markdown-body public-post-body" id="public-article-body"><p class="public-loading">渲染中…</p></article>');
+    h.push('<article class="markdown-body public-post-body">' + renderMarkdown(post.body || "") + "</article>");
     h.push("</div>");
     root.innerHTML = h.join("");
-    const bodyEl = document.getElementById("public-article-body");
-    try {
-      const j = await renderMarkdownServer(post.body || "");
-      const html = typeof j.html === "string" ? j.html : "";
-      if (bodyEl) {
-        bodyEl.innerHTML =
-          html.trim() === "" && !String(post.body || "").trim()
-            ? '<p class="md-empty">（无内容）</p>'
-            : html || '<p class="md-empty">（无内容）</p>';
-      }
-    } catch {
-      if (bodyEl) bodyEl.innerHTML = renderMarkdownFallback(post.body || "");
-    }
   }
 
   function onSearchInput(ev) {
@@ -420,7 +395,7 @@
         const dir = parts.slice(2).join("/");
         try {
           const detail = await fetchDetailJson(provider, login, dir);
-          await renderDetail(detail);
+          renderDetail(detail);
           document.title = (detail.title || "手记") + " · 公共手记";
         } catch {
           root.innerHTML =

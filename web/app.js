@@ -735,8 +735,7 @@
     return s;
   }
 
-  /** 服务端 Goldmark 不可用时的简易预览（无 GFM 表格等） */
-  function renderMarkdownFallback(text) {
+  function renderMarkdown(text) {
     if (!String(text).trim()) {
       return '<p class="md-empty">（无内容）</p>';
     }
@@ -776,30 +775,8 @@
     return html;
   }
 
-  let previewRenderSeq = 0;
-
-  async function updatePreview() {
-    const seq = ++previewRenderSeq;
-    const text = getBodyText();
-    if (!String(text).trim()) {
-      els.preview.innerHTML = '<p class="md-empty">（无内容）</p>';
-      return;
-    }
-    try {
-      const r = await fetch("/api/md/render", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-        credentials: "same-origin",
-      });
-      if (!r.ok) throw new Error(String(r.status));
-      const j = await r.json();
-      if (seq !== previewRenderSeq) return;
-      els.preview.innerHTML = typeof j.html === "string" ? j.html : "";
-    } catch {
-      if (seq !== previewRenderSeq) return;
-      els.preview.innerHTML = renderMarkdownFallback(text);
-    }
+  function updatePreview() {
+    els.preview.innerHTML = renderMarkdown(getBodyText());
   }
 
   function setViewMode(mode) {
@@ -817,7 +794,7 @@
       els.body.classList.toggle("hidden", !edit);
     }
     els.preview.classList.toggle("hidden", edit);
-    if (!edit) void updatePreview();
+    if (!edit) updatePreview();
     if (edit && mdEditor) {
       requestAnimationFrame(() => {
         mdEditor.codemirror.refresh();
@@ -949,7 +926,7 @@
         setSavedHint("已保存");
         if (hintTimer) clearTimeout(hintTimer);
         hintTimer = setTimeout(() => setSavedHint(""), 2000);
-        if (viewMode === "preview") void updatePreview();
+        if (viewMode === "preview") updatePreview();
       }
     }, 400);
   }
