@@ -56,9 +56,16 @@ func mapImageExt(ct string) (ext string, ok bool) {
 		return ".heic", true
 	case "image/avif":
 		return ".avif", true
+	case "image/bmp":
+		return ".bmp", true
 	default:
 		return "", false
 	}
+}
+
+// isBMPImage Windows BMP 魔数为 "BM"；http.DetectContentType 常无法识别。
+func isBMPImage(data []byte) bool {
+	return len(data) >= 2 && data[0] == 0x42 && data[1] == 0x4D
 }
 
 // isISOBMFFImage 识别 ISO Base Media（手机相册常见 HEIC/HEIF/AVIF），
@@ -86,6 +93,9 @@ func detectImageType(data []byte) (ext string, contentType string, ok bool) {
 	}
 	if ext, contentType, ok = isISOBMFFImage(data); ok {
 		return ext, contentType, true
+	}
+	if isBMPImage(data) {
+		return ".bmp", "image/bmp", true
 	}
 	ct := http.DetectContentType(data)
 	ext, ok = mapImageExt(ct)
@@ -193,7 +203,7 @@ func registerVaultAPI(g *gin.RouterGroup) {
 		}
 		ext, _, ok := detectImageType(data)
 		if !ok || ext == "" {
-			c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "不支持的图片格式（支持 png、jpeg、gif、webp、svg、heic、avif）"})
+			c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "不支持的图片格式（支持 png、jpeg、gif、webp、bmp、svg、heic、avif）"})
 			return
 		}
 		name, err := v.SaveImage(noteID, data, ext)
