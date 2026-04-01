@@ -936,6 +936,45 @@ body {
   border-radius: 0;
   padding: 0.5rem 0.65rem;
   background: var(--bg-elevated);
+  color: var(--text);
+}
+
+/* 覆盖 easymde.min.css：暗色下工具栏图标/按钮默认可视为黑色，需与主题文字色一致 */
+.editor-main .EasyMDEContainer .editor-toolbar button {
+  color: var(--text);
+  border-color: transparent;
+}
+
+.editor-main .EasyMDEContainer .editor-toolbar .fa {
+  color: inherit;
+}
+
+.editor-main .EasyMDEContainer .editor-toolbar button:hover,
+.editor-main .EasyMDEContainer .editor-toolbar button.active {
+  background: rgb(0 0 0 / 6%);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+[data-theme="dark"] .editor-main .EasyMDEContainer .editor-toolbar button:hover,
+[data-theme="dark"] .editor-main .EasyMDEContainer .editor-toolbar button.active {
+  background: rgb(255 255 255 / 10%);
+  border-color: var(--border);
+}
+
+.editor-main .EasyMDEContainer .editor-toolbar i.separator {
+  border-left-color: var(--border);
+  border-right-color: transparent;
+}
+
+.editor-main .EasyMDEContainer .editor-toolbar.fullscreen {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+[data-theme="dark"] .editor-main .EasyMDEContainer .editor-toolbar.fullscreen::before,
+[data-theme="dark"] .editor-main .EasyMDEContainer .editor-toolbar.fullscreen::after {
+  background: none;
 }
 .editor-main .EasyMDEContainer .CodeMirror {
   flex: 1;
