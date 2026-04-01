@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>笔记云</title>
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any" />
@@ -57,6 +57,14 @@
     <main class="editor-panel" id="editor-panel">
       <button
         type="button"
+        class="sidebar-backdrop"
+        id="sidebar-backdrop"
+        tabindex="-1"
+        aria-label="关闭笔记列表"
+        aria-hidden="true"
+      ></button>
+      <button
+        type="button"
         class="sidebar-expand-fab"
         id="btn-sidebar-expand"
         hidden
@@ -68,11 +76,32 @@
       </button>
       <div class="empty-state" id="empty-state">
         <p class="empty-title">选择或创建一条笔记</p>
-        <p class="empty-hint">左侧点「新建」，或从列表中选择已有笔记。</p>
+        <p class="empty-hint">从左侧列表选一条，或先「新建」。窄屏请先点 ☰ 或下方按钮打开列表。</p>
+        <button type="button" class="btn btn-primary empty-open-list" id="btn-empty-open-list">
+          打开笔记列表
+        </button>
       </div>
 
       <div class="editor-wrap hidden" id="editor-wrap">
+        <input
+          type="file"
+          id="note-image-file"
+          class="note-image-file-input"
+          accept="image/*"
+          multiple
+          tabindex="-1"
+          aria-hidden="true"
+        />
         <header class="editor-toolbar">
+          <button
+            type="button"
+            class="btn btn-ghost icon-btn editor-mobile-menu"
+            id="btn-mobile-menu"
+            aria-label="打开笔记列表"
+            title="笔记列表"
+          >
+            <span class="icon-sidebar-menu" aria-hidden="true"></span>
+          </button>
           <input
             type="text"
             id="note-title"
@@ -123,13 +152,12 @@
               </label>
             </div>
           </div>
-          <span class="md-hint">Markdown（EasyMDE），支持粘贴或拖入图片</span>
         </div>
         <div class="editor-main" id="editor-main">
           <textarea
             id="note-body"
             class="note-body hidden"
-            placeholder="在此编写 Markdown…&#10;&#10;可粘贴截图（Ctrl+V）或将图片拖入此区域。"
+            placeholder="在此编写 Markdown…&#10;&#10;可粘贴截图（Ctrl+V）、拖入图片，或使用编辑模式下工具栏「上传」从相册/相机添加。"
             spellcheck="true"
             aria-label="笔记正文 Markdown"
           ></textarea>

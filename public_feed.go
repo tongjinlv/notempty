@@ -335,7 +335,7 @@ func findPageStart(filtered []PublicPostItem, cursorStr string) int {
 
 func isPublicImageExt(name string) bool {
 	switch strings.ToLower(filepath.Ext(name)) {
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg":
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".heic", ".heif", ".avif":
 		return true
 	default:
 		return false

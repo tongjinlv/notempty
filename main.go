@@ -52,8 +52,29 @@ func mapImageExt(ct string) (ext string, ok bool) {
 		return ".webp", true
 	case "image/svg+xml":
 		return ".svg", true
+	case "image/heic", "image/heif":
+		return ".heic", true
+	case "image/avif":
+		return ".avif", true
 	default:
 		return "", false
+	}
+}
+
+// isISOBMFFImage 识别 ISO Base Media（手机相册常见 HEIC/HEIF/AVIF），
+// 因 http.DetectContentType 常误判为 application/octet-stream 导致上传被拒。
+func isISOBMFFImage(data []byte) (ext string, contentType string, ok bool) {
+	if len(data) < 12 || string(data[4:8]) != "ftyp" {
+		return "", "", false
+	}
+	brand := string(data[8:12])
+	switch brand {
+	case "heic", "heix", "hevc", "hevx", "mif1", "msf1", "heim", "heis":
+		return ".heic", "image/heic", true
+	case "avif", "avis":
+		return ".avif", "image/avif", true
+	default:
+		return "", "", false
 	}
 }
 
@@ -62,6 +83,9 @@ func detectImageType(data []byte) (ext string, contentType string, ok bool) {
 	if len(t) > 0 && bytes.Contains(data, []byte("<svg")) &&
 		(strings.HasPrefix(strings.ToLower(t), "<svg") || strings.HasPrefix(strings.ToLower(t), "<?xml")) {
 		return ".svg", "image/svg+xml", true
+	}
+	if ext, contentType, ok = isISOBMFFImage(data); ok {
+		return ext, contentType, true
 	}
 	ct := http.DetectContentType(data)
 	ext, ok = mapImageExt(ct)
@@ -169,7 +193,7 @@ func registerVaultAPI(g *gin.RouterGroup) {
 		}
 		ext, _, ok := detectImageType(data)
 		if !ok || ext == "" {
-			c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "仅支持 png / jpeg / gif / webp / svg"})
+			c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "不支持的图片格式（支持 png、jpeg、gif、webp、svg、heic、avif）"})
 			return
 		}
 		name, err := v.SaveImage(noteID, data, ext)

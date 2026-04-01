@@ -9,13 +9,21 @@
   const VIRTUAL_ROW_ESTIMATE_PX = 68;
   const VIRTUAL_OVERSCAN = 8;
 
+  const mobileLayoutMq = window.matchMedia("(max-width: 720px)");
+  function isMobileLayout() {
+    return mobileLayoutMq.matches;
+  }
+
   /** @typedef {{ id: string, title: string, body: string, updatedAt: number, dir: string, public?: boolean, tags?: string[], categories?: string[] }} Note */
 
   const els = {
     app: document.getElementById("app"),
     sidebar: document.getElementById("sidebar"),
+    sidebarBackdrop: document.getElementById("sidebar-backdrop"),
     btnSidebarCollapse: document.getElementById("btn-sidebar-collapse"),
     btnSidebarExpand: document.getElementById("btn-sidebar-expand"),
+    btnMobileMenu: document.getElementById("btn-mobile-menu"),
+    btnEmptyOpenList: document.getElementById("btn-empty-open-list"),
     noteList: document.getElementById("note-list"),
     search: document.getElementById("search"),
     btnNew: document.getElementById("btn-new"),
@@ -34,6 +42,7 @@
     notePublic: document.getElementById("note-public"),
     noteTags: document.getElementById("note-tags"),
     noteCategories: document.getElementById("note-categories"),
+    noteImageFile: document.getElementById("note-image-file"),
   };
 
   /** @type {Note[]} */
@@ -64,6 +73,15 @@
   /** EasyMDE 实例；未加载或降级时为 null */
   let mdEditor = null;
 
+  function triggerNoteImageUpload() {
+    if (!getActiveNote()) {
+      setSavedHint("请先打开一条笔记");
+      setTimeout(() => setSavedHint(""), 2000);
+      return;
+    }
+    els.noteImageFile?.click();
+  }
+
   function getBodyText() {
     if (mdEditor) return mdEditor.value();
     return els.body.value;
@@ -85,7 +103,7 @@
       status: false,
       autofocus: false,
       placeholder:
-        "在此编写 Markdown…\n\n可粘贴截图（Ctrl+V）或将图片拖入此区域。",
+        "在此编写 Markdown…\n\n可粘贴截图（Ctrl+V）、拖入图片，或点工具栏「上传」从相册/相机添加。",
       minHeight: "260px",
       autoDownloadFontAwesome: true,
       renderingConfig: {
@@ -108,6 +126,14 @@
         "|",
         "link",
         "image",
+        {
+          name: "upload-image",
+          action: function () {
+            triggerNoteImageUpload();
+          },
+          className: "fa fa-cloud-upload",
+          title: "上传图片到笔记（相册/相机）",
+        },
         "|",
         "table",
         "|",
@@ -305,6 +331,12 @@
     els.btnSidebarCollapse.setAttribute("aria-expanded", collapsed ? "false" : "true");
     if (collapsed) els.btnSidebarExpand.removeAttribute("hidden");
     else els.btnSidebarExpand.setAttribute("hidden", "");
+    if (els.sidebarBackdrop) {
+      els.sidebarBackdrop.setAttribute("aria-hidden", collapsed ? "true" : "false");
+      if (collapsed && document.activeElement === els.sidebarBackdrop) {
+        els.btnMobileMenu?.focus();
+      }
+    }
     localStorage.setItem(SIDEBAR_KEY, collapsed ? "1" : "0");
   }
 
@@ -321,7 +353,11 @@
 
   function expandSidebar() {
     applySidebarCollapsed(false);
-    els.btnSidebarCollapse?.focus();
+    if (isMobileLayout()) {
+      queueMicrotask(() => els.search?.focus());
+    } else {
+      els.btnSidebarCollapse?.focus();
+    }
   }
 
   function toggleTheme() {
@@ -862,15 +898,19 @@
   async function insertImagesFromFiles(files) {
     if (!getActiveNote() || !files.length) return;
     for (const file of files) {
-      if (!file.type.startsWith("image/")) continue;
+      const isImage =
+        (file.type && file.type.startsWith("image/")) ||
+        /\.(png|jpe?g|gif|webp|svg|heic|heif|bmp)$/i.test(file.name || "");
+      if (!isImage) continue;
       try {
         setSavedHint("上传图片…");
         const url = await uploadImageFile(file);
         if (viewMode === "preview") setViewMode("edit");
         insertIntoEditor("\n\n![](" + url + ")\n\n");
         scheduleSave();
-      } catch {
-        setSavedHint("图片上传失败");
+      } catch (e) {
+        const msg = e && e.message ? String(e.message) : "";
+        setSavedHint(msg ? "上传失败：" + msg.slice(0, 120) : "图片上传失败");
         return;
       }
     }
@@ -889,6 +929,9 @@
     if (els.noteCategories) els.noteCategories.value = stringListToInput(note.categories);
     setViewMode(startInEdit ? "edit" : "preview");
     showEditor(true);
+    if (isMobileLayout()) {
+      collapseSidebar();
+    }
     els.title.focus();
     renderList();
     setSavedHint("");
@@ -1031,6 +1074,23 @@
   els.tabEdit.addEventListener("click", () => setViewMode("edit"));
   els.tabPreview.addEventListener("click", () => setViewMode("preview"));
 
+  els.noteImageFile?.addEventListener("change", async () => {
+    const files = Array.from(els.noteImageFile.files || []);
+    els.noteImageFile.value = "";
+    await insertImagesFromFiles(files);
+  });
+
+  els.sidebarBackdrop?.addEventListener("click", () => collapseSidebar());
+  els.btnMobileMenu?.addEventListener("click", () => expandSidebar());
+  els.btnEmptyOpenList?.addEventListener("click", () => expandSidebar());
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!isMobileLayout() || els.app?.classList.contains("sidebar-collapsed")) return;
+    collapseSidebar();
+    e.preventDefault();
+  });
+
   const main = els.editorMain;
   if (main) {
     main.addEventListener("paste", async (e) => {
@@ -1048,8 +1108,9 @@
             insertIntoEditor("\n\n![](" + url + ")\n\n");
             scheduleSave();
             setSavedHint("");
-          } catch {
-            setSavedHint("图片上传失败");
+          } catch (e) {
+            const msg = e && e.message ? String(e.message) : "";
+            setSavedHint(msg ? "上传失败：" + msg.slice(0, 120) : "图片上传失败");
           }
           break;
         }
