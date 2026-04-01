@@ -19,15 +19,17 @@ import (
 
 // PublicPostItem 公共主页一条（无需登录）。
 type PublicPostItem struct {
-	Provider    string `json:"provider"`
-	Login       string `json:"login"`
-	AuthorLabel string `json:"authorLabel"`
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Body        string `json:"body"`
-	Dir         string `json:"dir"`
-	UpdatedAt   int64  `json:"updatedAt"`
-	DetailURL   string `json:"detailUrl"`
+	Provider    string   `json:"provider"`
+	Login       string   `json:"login"`
+	AuthorLabel string   `json:"authorLabel"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Body        string   `json:"body"`
+	Dir         string   `json:"dir"`
+	UpdatedAt   int64    `json:"updatedAt"`
+	DetailURL   string   `json:"detailUrl"`
+	Tags        []string `json:"tags,omitempty"`
+	Categories  []string `json:"categories,omitempty"`
 }
 
 var imgMdRE = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
@@ -180,6 +182,8 @@ func collectPublicPosts(vaultBase string) ([]PublicPostItem, error) {
 			Dir:         dirRel,
 			UpdatedAt:   note.UpdatedAt,
 			DetailURL:   detail,
+			Tags:        note.Tags,
+			Categories:  note.Categories,
 		})
 		return nil
 	})
@@ -250,9 +254,11 @@ func filterPublicByQuery(all []PublicPostItem, q string) []PublicPostItem {
 		title := strings.ToLower(p.Title)
 		body := plainTextForSearchGo(p.Body)
 		auth := strings.ToLower(p.AuthorLabel)
+		tagsCat := strings.ToLower(strings.Join(p.Tags, " ") + " " + strings.Join(p.Categories, " "))
+		tagsCat = strings.TrimSpace(tagsCat)
 		ok := true
 		for _, t := range toks {
-			if !strings.Contains(title, t) && !strings.Contains(body, t) && !strings.Contains(auth, t) {
+			if !strings.Contains(title, t) && !strings.Contains(body, t) && !strings.Contains(auth, t) && !strings.Contains(tagsCat, t) {
 				ok = false
 				break
 			}
@@ -377,6 +383,8 @@ func loadPublicPostDetail(vaultBase, provider, login, dirRel string) (PublicPost
 		Dir:         dirRel,
 		UpdatedAt:   note.UpdatedAt,
 		DetailURL:   "/public/post/" + provider + "/" + login + "/" + dirRel,
+		Tags:        note.Tags,
+		Categories:  note.Categories,
 	}, nil
 }
 

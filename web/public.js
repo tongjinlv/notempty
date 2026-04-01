@@ -297,7 +297,7 @@
       '<p class="public-blog-sub">数据由服务端分页与搜索；列表仅返回摘要正文，点标题进入全文。多词用空格连接表示同时包含。</p>' +
       '<div class="public-search-wrap">' +
       '<label class="sr-only" for="public-search">搜索公开手记</label>' +
-      '<input type="search" id="public-search" class="public-search-input" placeholder="搜索标题、正文、作者…" autocomplete="off" value="' +
+      '<input type="search" id="public-search" class="public-search-input" placeholder="搜索标题、正文、标签、分类、作者…" autocomplete="off" value="' +
       qAttr +
       '" />' +
       "</div>" +
@@ -327,7 +327,7 @@
     h.push(
       '<form class="public-search-form" action="/public" method="get" role="search">' +
         '<label class="sr-only" for="public-detail-search">搜索</label>' +
-        '<input type="search" id="public-detail-search" name="q" class="public-search-input public-search-input-compact" placeholder="搜索全部公开手记…" />' +
+        '<input type="search" id="public-detail-search" name="q" class="public-search-input public-search-input-compact" placeholder="搜索标题、正文、标签、分类…" />' +
         '<button type="submit" class="btn btn-primary public-search-submit">搜索</button>' +
         "</form>"
     );

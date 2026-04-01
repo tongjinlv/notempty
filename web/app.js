@@ -402,7 +402,8 @@
   }
 
   /**
-   * 无搜索词时顺序与 API 一致；有搜索时：空格分词须全部命中（标题或正文前段），标题命中数多的排前。
+   * 无搜索词时顺序与 API 一致；有搜索时：空格分词须全部命中（标题、正文前段、标签、分类），
+   * 排序优先标题命中数，其次标签/分类命中数，再按更新时间。
    */
   function filterNotes(query) {
     const tokens = searchTokens(query);
@@ -418,6 +419,7 @@
       const catsL = (Array.isArray(n.categories) ? n.categories : []).join(" ").toLowerCase();
 
       let titleHits = 0;
+      let metaHits = 0;
       let ok = true;
       for (const t of tokens) {
         const inT = titleL.includes(t);
@@ -429,13 +431,15 @@
           break;
         }
         if (inT) titleHits++;
+        else if (inTag || inCat) metaHits++;
       }
       if (!ok) continue;
-      scored.push({ n, titleHits, updatedAt: n.updatedAt });
+      scored.push({ n, titleHits, metaHits, updatedAt: n.updatedAt });
     }
 
     scored.sort((a, b) => {
       if (b.titleHits !== a.titleHits) return b.titleHits - a.titleHits;
+      if (b.metaHits !== a.metaHits) return b.metaHits - a.metaHits;
       return b.updatedAt - a.updatedAt;
     });
     return scored.map((x) => x.n);
