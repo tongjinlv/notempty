@@ -16,7 +16,7 @@
 - 程序启动后提供一个本地网页（比如 `http://127.0.0.1:8787`）
 - 你在网页里编辑笔记，内容写到本机磁盘
 - 每位登录用户都有自己的目录：`users/<provider>/<login>/...`
-- 每篇笔记是一个文件夹，默认目录结构是 `YYYYMM/<noteId>/note.md`
+- 每篇笔记是一个文件夹，默认目录结构是 `YYYY-MM/<noteId>/note.md`（年-月，中间为连字符）
 
 示例（以 GitHub 用户 `alice` 为例）：
 
@@ -25,7 +25,7 @@ notes-vault/
 ├── users/
 │   └── github/
 │       └── alice/
-│           └── 202603/
+│           └── 2026-03/
 │               └── n_xxxxxxxx/
 │                   ├── note.md
 │                   └── image-*.png
@@ -43,6 +43,12 @@ notes-vault/
 - 明暗主题切换
 - 公开笔记列表与详情页
 - Windows / Linux 服务安装（可选）
+
+### 笔记 front matter（Hugo 风格）
+
+- 支持常见字段：`title`、`date`、`draft`、`tags`、`categories`（标签与分类会被忽略、不入库；**从网页保存**会按本站格式重写 front matter，若需长期保留完整 Hugo 头请用 Git 或外部编辑器）。
+- **`draft` 与「是否公开」**：`draft: false` 等价于勾选公开（与 `public: true` 一致）；`draft: true` 表示不公开。
+- 若同时写了 `public` 和 `draft`，以 **`public` 为准**（方便你手动覆盖）。
 
 ---
 

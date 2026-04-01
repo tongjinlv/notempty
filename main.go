@@ -603,7 +603,7 @@ func main() {
 	}
 
 	log.Printf("配置: %s", cfgFile)
-	log.Printf("Markdown 仓库根: %s/users/<provider>/<登录名>/（其下 YYYYMM/<id>/note.md，例如 202603/n_xxx；兼容旧版 YYYY/MM/<id>、YYYY/MM/DD/<id>）", vaultBase)
+	log.Printf("Markdown 仓库根: %s/users/<provider>/<登录名>/（其下 YYYY-MM/<id>/note.md，例如 2026-03/n_xxx；兼容旧版 YYYYMM、YYYY/MM、YYYY/MM/DD）", vaultBase)
 	if auth.github != nil && auth.github.enabled() {
 		log.Println("GitHub 登录已就绪（OAuth 应用的 callbackUrl 须与配置完全一致）")
 	}

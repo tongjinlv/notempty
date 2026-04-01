@@ -18,7 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Note 与前端 JSON 对齐；Dir 为相对 vault 的路径，如 202603/n_xxx（正斜杠）。
+// Note 与前端 JSON 对齐；Dir 为相对 vault 的路径，如 2026-03/n_xxx（正斜杠）。
 type Note struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`
@@ -28,11 +28,25 @@ type Note struct {
 	Public bool `json:"public"`
 }
 
-type noteFM struct {
-	ID         string `yaml:"id"`
-	Title      string `yaml:"title"`
+// noteFMIn 读取 front matter：兼容本站字段与 Hugo 常用字段（date、draft、tags 等）。
+type noteFMIn struct {
+	ID         string   `yaml:"id"`
+	Title      string   `yaml:"title"`
+	Updated    string   `yaml:"updated"`
+	Public     *bool    `yaml:"public"`
+	Draft      *bool    `yaml:"draft"`
+	Tags       []string `yaml:"tags"`
+	Categories []string `yaml:"categories"`
+}
+
+// noteFMOut 写入 front matter：带 Hugo 常见的 date / draft（draft 与 public 互斥语义：draft=true 表示未发布）。
+type noteFMOut struct {
+	ID      string `yaml:"id"`
+	Title   string `yaml:"title"`
 	Updated string `yaml:"updated"`
+	Date    string `yaml:"date,omitempty"`
 	Public  bool   `yaml:"public"`
+	Draft   bool   `yaml:"draft"`
 }
 
 type legacyFile struct {
@@ -52,6 +66,8 @@ var (
 	yearRe  = regexp.MustCompile(`^\d{4}$`)
 	monthRe = regexp.MustCompile(`^(0[1-9]|1[0-2])$`)
 	dayRe   = regexp.MustCompile(`^(0[1-9]|[12]\d|3[01])$`)
+	yearMonthHyphenRe = regexp.MustCompile(`^(19|20)\d{2}-(0[1-9]|1[0-2])$`)
+	// 旧版单段年月目录（无连字符），仍识别以便读取已有数据
 	yearMonthCompactRe = regexp.MustCompile(`^(19|20)\d{2}(0[1-9]|1[0-2])$`)
 	noteFolderRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 )
@@ -92,6 +108,57 @@ func splitFrontMatter(raw []byte) (front []byte, body []byte, hasFM bool) {
 	return front, body, true
 }
 
+func resolvePublicFromFM(public *bool, draft *bool) bool {
+	if public != nil {
+		return *public
+	}
+	if draft != nil {
+		return !*draft
+	}
+	return false
+}
+
+func parseYAMLDateValue(v interface{}) (time.Time, bool) {
+	if v == nil {
+		return time.Time{}, false
+	}
+	switch x := v.(type) {
+	case time.Time:
+		return x, true
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return time.Time{}, false
+		}
+		layouts := []string{
+			time.RFC3339,
+			"2006-01-02T15:04:05Z07:00",
+			"2006-01-02T15:04:05",
+			"2006-01-02",
+		}
+		for _, layout := range layouts {
+			if t, err := time.Parse(layout, s); err == nil {
+				return t, true
+			}
+		}
+		return time.Time{}, false
+	default:
+		return time.Time{}, false
+	}
+}
+
+func updatedAtFromFM(updated string, dateFromMap interface{}, modTime time.Time) int64 {
+	if strings.TrimSpace(updated) != "" {
+		if t, err := time.Parse(time.RFC3339, updated); err == nil {
+			return t.UnixMilli()
+		}
+	}
+	if t, ok := parseYAMLDateValue(dateFromMap); ok {
+		return t.UnixMilli()
+	}
+	return modTime.UnixMilli()
+}
+
 func parseNoteMD(raw []byte, folderID string, modTime time.Time) (Note, error) {
 	front, body, ok := splitFrontMatter(raw)
 	n := Note{Dir: ""}
@@ -102,9 +169,15 @@ func parseNoteMD(raw []byte, folderID string, modTime time.Time) (Note, error) {
 		n.UpdatedAt = modTime.UnixMilli()
 		return n, nil
 	}
-	var fm noteFM
+	var fm noteFMIn
 	if err := yaml.Unmarshal(front, &fm); err != nil {
 		return Note{}, err
+	}
+	var rawMap map[string]interface{}
+	_ = yaml.Unmarshal(front, &rawMap)
+	var dateVal interface{}
+	if rawMap != nil {
+		dateVal = rawMap["date"]
 	}
 	if fm.ID != "" {
 		n.ID = fm.ID
@@ -112,26 +185,21 @@ func parseNoteMD(raw []byte, folderID string, modTime time.Time) (Note, error) {
 		n.ID = folderID
 	}
 	n.Title = fm.Title
-	if fm.Updated != "" {
-		if t, err := time.Parse(time.RFC3339, fm.Updated); err == nil {
-			n.UpdatedAt = t.UnixMilli()
-		} else {
-			n.UpdatedAt = modTime.UnixMilli()
-		}
-	} else {
-		n.UpdatedAt = modTime.UnixMilli()
-	}
-	n.Public = fm.Public
+	n.UpdatedAt = updatedAtFromFM(fm.Updated, dateVal, modTime)
+	n.Public = resolvePublicFromFM(fm.Public, fm.Draft)
 	n.Body = string(body)
 	return n, nil
 }
 
 func composeNoteMD(n Note, updated time.Time) ([]byte, error) {
-	fm := noteFM{
+	ut := updated.UTC()
+	fm := noteFMOut{
 		ID:      n.ID,
 		Title:   n.Title,
-		Updated: updated.UTC().Format(time.RFC3339),
+		Updated: ut.Format(time.RFC3339),
+		Date:    ut.Format("2006-01-02"),
 		Public:  n.Public,
+		Draft:   !n.Public,
 	}
 	head, err := yaml.Marshal(fm)
 	if err != nil {
@@ -151,7 +219,8 @@ func composeNoteMD(n Note, updated time.Time) ([]byte, error) {
 func isNoteLayoutDir(parts []string) bool {
 	switch len(parts) {
 	case 2:
-		return yearMonthCompactRe.MatchString(parts[0]) && noteFolderRe.MatchString(parts[1])
+		ym := yearMonthHyphenRe.MatchString(parts[0]) || yearMonthCompactRe.MatchString(parts[0])
+		return ym && noteFolderRe.MatchString(parts[1])
 	case 3:
 		return yearRe.MatchString(parts[0]) && monthRe.MatchString(parts[1]) && noteFolderRe.MatchString(parts[2])
 	case 4:
@@ -355,7 +424,7 @@ func (v *Vault) Create(title, body, beforeID string, public bool) (Note, error) 
 	t := time.Now()
 	y, m, _ := t.Date()
 	dirRel := filepath.ToSlash(filepath.Join(
-		fmt.Sprintf("%04d%02d", y, int(m)),
+		fmt.Sprintf("%04d-%02d", y, int(m)),
 		id,
 	))
 	full := v.abs(dirRel)
@@ -529,7 +598,7 @@ func migrateLegacyJSON(vaultRoot, jsonPath string) error {
 		}
 		y, m, _ := t.Date()
 		dirRel := filepath.ToSlash(filepath.Join(
-			fmt.Sprintf("%04d%02d", y, int(m)),
+			fmt.Sprintf("%04d-%02d", y, int(m)),
 			n.ID,
 		))
 		full := filepath.Join(vaultRoot, filepath.FromSlash(dirRel))
