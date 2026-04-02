@@ -297,6 +297,14 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
 		SkipPaths: []string{"/", "/styles.css", "/app.js", "/favicon.svg", "/favicon.ico", "/api/auth/status", "/auth/github/callback", "/auth/gitee/callback", "/vendor/easymde/easymde.min.css", "/vendor/easymde/easymde.min.js", "/public", "/public/", "/public.js", "/api/public/posts"},
 	}))
+	// web/vendor 下为打包的第三方库，内容极少随部署变化；长期缓存减少重复下载。
+	// 升级 EasyMDE 时请同步修改 web/index.html 中 ?v= 版本号。
+	r.Use(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/vendor/") {
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		}
+		c.Next()
+	})
 
 	registerPublicAPI(r, vaultBase)
 	registerPublicWeb(r, webRoot)
