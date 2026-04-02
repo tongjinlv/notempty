@@ -537,11 +537,15 @@ func registerPublicAPI(r *gin.Engine, vaultBase string) {
 			c.Status(http.StatusNotFound)
 			return
 		}
-		ct, _, ok := detectImageType(data)
-		if !ok {
+		ct, _, imgOk := detectImageType(data)
+		if !imgOk {
 			ct = http.DetectContentType(data)
 		}
-		c.Header("Cache-Control", "public, max-age=3600")
+		if imgOk || strings.HasPrefix(ct, "image/") {
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			c.Header("Cache-Control", "public, max-age=86400")
+		}
 		c.Data(http.StatusOK, ct, data)
 	})
 }
@@ -553,6 +557,7 @@ func servePublicPage(webRoot fs.FS) gin.HandlerFunc {
 			c.String(http.StatusInternalServerError, "无法读取页面")
 			return
 		}
+		c.Header("Cache-Control", "no-cache")
 		c.Data(http.StatusOK, "text/html; charset=utf-8", b)
 	}
 }
@@ -568,6 +573,7 @@ func registerPublicWeb(r *gin.Engine, webRoot fs.FS) {
 			c.Status(http.StatusNotFound)
 			return
 		}
+		c.Header("Cache-Control", "public, max-age=604800")
 		c.Data(http.StatusOK, "application/javascript; charset=utf-8", b)
 	})
 }

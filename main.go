@@ -40,6 +40,27 @@ func newNoteID() string {
 
 const maxImageUpload = 32 << 20
 
+// HTTP 缓存：图片/字体等可长期不变；HTML/API 仍由各自路由决定不长期缓存。
+const (
+	cacheImmutableYear = "public, max-age=31536000, immutable"
+	cacheOneWeek       = "public, max-age=604800"
+	cacheOneDay        = "public, max-age=86400"
+)
+
+// setVaultFileCache 为笔记目录下文件设置 Cache-Control（图片多为随机文件名，可用 immutable）。
+func setVaultFileCache(c *gin.Context, absPath string, contentType string, isImage bool) {
+	if isImage || strings.HasPrefix(contentType, "image/") {
+		c.Header("Cache-Control", cacheImmutableYear)
+		return
+	}
+	switch strings.ToLower(filepath.Ext(absPath)) {
+	case ".woff", ".woff2", ".ttf", ".otf", ".eot":
+		c.Header("Cache-Control", cacheImmutableYear)
+	default:
+		c.Header("Cache-Control", cacheOneDay)
+	}
+}
+
 func mapImageExt(ct string) (ext string, ok bool) {
 	switch strings.Split(ct, ";")[0] {
 	case "image/png":
@@ -243,19 +264,23 @@ func registerVaultAPI(g *gin.RouterGroup) {
 		}
 		switch strings.ToLower(filepath.Ext(abs)) {
 		case ".md", ".markdown":
+			c.Header("Cache-Control", cacheOneDay)
 			c.Data(http.StatusOK, "text/markdown; charset=utf-8", data)
 			return
 		case ".css":
+			c.Header("Cache-Control", cacheOneDay)
 			c.Data(http.StatusOK, "text/css; charset=utf-8", data)
 			return
 		case ".js", ".mjs":
+			c.Header("Cache-Control", cacheOneDay)
 			c.Data(http.StatusOK, "application/javascript; charset=utf-8", data)
 			return
 		}
-		ct, _, ok := detectImageType(data)
-		if !ok {
+		ct, _, imgOk := detectImageType(data)
+		if !imgOk {
 			ct = http.DetectContentType(data)
 		}
+		setVaultFileCache(c, abs, ct, imgOk)
 		c.Data(http.StatusOK, ct, data)
 	})
 }
@@ -388,6 +413,7 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 			c.String(http.StatusInternalServerError, "无法读取页面")
 			return
 		}
+		c.Header("Cache-Control", "no-cache")
 		c.Data(http.StatusOK, "text/html; charset=utf-8", b)
 	})
 	r.GET("/styles.css", func(c *gin.Context) {
@@ -396,6 +422,7 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 			c.Status(http.StatusNotFound)
 			return
 		}
+		c.Header("Cache-Control", cacheOneWeek)
 		c.Data(http.StatusOK, "text/css; charset=utf-8", b)
 	})
 	r.GET("/app.js", func(c *gin.Context) {
@@ -404,12 +431,14 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 			c.Status(http.StatusNotFound)
 			return
 		}
+		c.Header("Cache-Control", cacheOneWeek)
 		c.Data(http.StatusOK, "application/javascript; charset=utf-8", b)
 	})
 	if vendorFS, err := fs.Sub(webRoot, "vendor"); err == nil {
 		r.StaticFS("/vendor", http.FS(vendorFS))
 	}
 	serveFavicon := func(c *gin.Context) {
+		c.Header("Cache-Control", cacheOneWeek)
 		if len(faviconSVG) == 0 {
 			b, err := fs.ReadFile(webRoot, "favicon.svg")
 			if err != nil {
@@ -419,7 +448,6 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 			c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", b)
 			return
 		}
-		c.Header("Cache-Control", "public, max-age=86400")
 		c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", faviconSVG)
 	}
 	r.GET("/favicon.svg", serveFavicon)
