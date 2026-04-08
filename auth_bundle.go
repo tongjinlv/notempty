@@ -91,26 +91,28 @@ func (b *authBundle) sessionFromRequest(c *gin.Context) (*sessionPayload, bool) 
 	return nil, false
 }
 
-func handleAuthStatus(b *authBundle) gin.HandlerFunc {
+func handleAuthStatus(b *authBundle, maxUploadBytes int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ghOn := b != nil && b.github != nil && b.github.enabled()
 		giteeOn := b != nil && b.gitee != nil && b.gitee.enabled()
 		if !ghOn && !giteeOn {
 			c.JSON(http.StatusOK, gin.H{
-				"configured": false,
-				"enabled":    false,
-				"githubOAuth": false,
-				"giteeOAuth":  false,
-				"user":        nil,
+				"configured":      false,
+				"enabled":         false,
+				"githubOAuth":     false,
+				"giteeOAuth":      false,
+				"user":            nil,
+				"maxUploadBytes": maxUploadBytes,
 			})
 			return
 		}
 		if p, ok := b.sessionFromRequest(c); ok {
 			c.JSON(http.StatusOK, gin.H{
-				"configured":  true,
-				"enabled":     true,
-				"githubOAuth": ghOn,
-				"giteeOAuth":  giteeOn,
+				"configured":      true,
+				"enabled":         true,
+				"githubOAuth":     ghOn,
+				"giteeOAuth":      giteeOn,
+				"maxUploadBytes": maxUploadBytes,
 				"user": gin.H{
 					"provider":  p.Provider,
 					"login":     p.Login,
@@ -121,11 +123,12 @@ func handleAuthStatus(b *authBundle) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"configured":  true,
-			"enabled":     true,
-			"githubOAuth": ghOn,
-			"giteeOAuth":  giteeOn,
-			"user":        nil,
+			"configured":      true,
+			"enabled":         true,
+			"githubOAuth":     ghOn,
+			"giteeOAuth":      giteeOn,
+			"user":            nil,
+			"maxUploadBytes": maxUploadBytes,
 		})
 	}
 }

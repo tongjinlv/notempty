@@ -38,9 +38,6 @@ func newNoteID() string {
 	return "n_" + hex.EncodeToString(b)
 }
 
-// maxUploadSize 为上传至笔记目录的媒体与附件统一上限（单文件）。
-const maxUploadSize = 10 << 20
-
 // HTTP 缓存：图片/字体等可长期不变；HTML/API 仍由各自路由决定不长期缓存。
 const (
 	cacheImmutableYear = "public, max-age=31536000, immutable"
@@ -193,7 +190,7 @@ func tryMigrateLegacy(vaultRoot, explicitLegacy string) {
 	}
 }
 
-func registerVaultAPI(g *gin.RouterGroup) {
+func registerVaultAPI(g *gin.RouterGroup, maxUploadBytes int64) {
 	g.POST("/media", func(c *gin.Context) {
 		v := mustCtxVault(c)
 		noteID := strings.TrimSpace(c.PostForm("note"))
@@ -213,14 +210,16 @@ func registerVaultAPI(g *gin.RouterGroup) {
 		}
 		defer src.Close()
 
-		limited := io.LimitReader(src, maxUploadSize+1)
+		limited := io.LimitReader(src, maxUploadBytes+1)
 		data, err := io.ReadAll(limited)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		if len(data) > maxUploadSize {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "文件过大（最大 10MB）"})
+		if len(data) > int(maxUploadBytes) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error": fmt.Sprintf("文件过大（最大 %dMB）", maxUploadBytes/(1<<20)),
+			})
 			return
 		}
 		ext, _, ok := detectImageType(data)
@@ -321,10 +320,10 @@ func checkListenAddr(addr string) error {
 	return ln.Close()
 }
 
-func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler {
+func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle, maxUploadBytes int64) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.MaxMultipartMemory = maxUploadSize
+	r.MaxMultipartMemory = maxUploadBytes
 	r.RedirectTrailingSlash = false
 	r.RedirectFixedPath = false
 	r.HandleMethodNotAllowed = false
@@ -344,13 +343,13 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 	registerPublicAPI(r, vaultBase)
 	registerPublicWeb(r, webRoot)
 
-	r.GET("/api/auth/status", handleAuthStatus(auth))
+	r.GET("/api/auth/status", handleAuthStatus(auth, maxUploadBytes))
 	registerGitHubOAuthRoutes(r, auth.github)
 	registerGiteeOAuthRoutes(r, auth.gitee)
 	registerLogoutRoute(r, auth)
 
 	api := r.Group("/api", requireOAuthReady(auth), requireAuthAndUserVault(vaultBase, auth))
-	registerVaultAPI(api)
+	registerVaultAPI(api, maxUploadBytes)
 
 	api.GET("/notes", func(c *gin.Context) {
 		v := mustCtxVault(c)
@@ -468,11 +467,12 @@ func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle) http.Handler
 }
 
 type program struct {
-	addr      string
-	vaultBase string
-	web       fs.FS
-	auth      *authBundle
-	srv       *http.Server
+	addr           string
+	vaultBase      string
+	web            fs.FS
+	auth           *authBundle
+	uploadMaxBytes int64
+	srv            *http.Server
 }
 
 func appLog(s service.Service) service.Logger {
@@ -517,7 +517,7 @@ func (consoleLogger) Errorf(format string, args ...interface{}) error {
 
 func (p *program) Start(s service.Service) error {
 	lg := appLog(s)
-	handler := buildRouter(p.vaultBase, p.web, p.auth)
+	handler := buildRouter(p.vaultBase, p.web, p.auth, p.uploadMaxBytes)
 	p.srv = &http.Server{
 		Addr:    p.addr,
 		Handler: handler,
@@ -546,8 +546,8 @@ func (p *program) Stop(s service.Service) error {
 	return nil
 }
 
-func runHTTPServerForeground(addr string, vaultBase string, webRoot fs.FS, auth *authBundle) error {
-	handler := buildRouter(vaultBase, webRoot, auth)
+func runHTTPServerForeground(addr string, vaultBase string, webRoot fs.FS, auth *authBundle, maxUploadBytes int64) error {
+	handler := buildRouter(vaultBase, webRoot, auth, maxUploadBytes)
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: handler,
@@ -596,6 +596,7 @@ func main() {
 		log.Fatalf("读取配置 %s: %v", cfgFile, err)
 	}
 	listenAddr := normalizeListenAddr(strings.TrimSpace(fileCfg.Listen))
+	uploadMaxBytes := normalizeMaxUploadBytes(fileCfg.MaxUploadMB)
 
 	var gh *githubAuth
 	if fileCfg.GitHubOAuth != nil {
@@ -667,10 +668,11 @@ func main() {
 	}
 
 	prg := &program{
-		addr:      listenAddr,
-		vaultBase: vaultBase,
-		web:       webRoot,
-		auth:      auth,
+		addr:           listenAddr,
+		vaultBase:      vaultBase,
+		web:            webRoot,
+		auth:           auth,
+		uploadMaxBytes: uploadMaxBytes,
 	}
 
 	if *svcFlag != "" {
@@ -685,6 +687,7 @@ func main() {
 	}
 
 	log.Printf("配置: %s", cfgFile)
+	log.Printf("单文件上传上限: %dMB（notes-config.json 中 maxUploadMB，默认 10，最大 512）", uploadMaxBytes/(1<<20))
 	log.Printf("Markdown 仓库根: %s/users/<provider>/<登录名>/（其下 YYYY-MM/<id>/index.md，例如 2026-03/n_xxx；兼容旧版 note.md、YYYYMM、YYYY/MM、YYYY/MM/DD）", vaultBase)
 	if auth.github != nil && auth.github.enabled() {
 		log.Println("GitHub 登录已就绪（OAuth 应用的 callbackUrl 须与配置完全一致）")
@@ -705,7 +708,7 @@ func main() {
 		)
 	}
 	if service.Interactive() {
-		if err := runHTTPServerForeground(listenAddr, vaultBase, webRoot, auth); err != nil {
+		if err := runHTTPServerForeground(listenAddr, vaultBase, webRoot, auth, uploadMaxBytes); err != nil {
 			log.Fatal(err)
 		}
 		return

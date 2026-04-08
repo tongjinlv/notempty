@@ -84,6 +84,13 @@
   let authGiteeOAuth = false;
   /** @type {{ login: string, name?: string, avatarUrl?: string } | null} */
   let authUser = null;
+  /** 单文件上传上限（字节），与 notes-config.json 的 maxUploadMB 及 /api/auth/status 的 maxUploadBytes 一致 */
+  let maxUploadBytes = 10 << 20;
+
+  function maxUploadMBLabel() {
+    const mb = Math.round(maxUploadBytes / (1024 * 1024));
+    return mb > 0 ? mb : 10;
+  }
 
   /** EasyMDE 实例；未加载或降级时为 null */
   let mdEditor = null;
@@ -167,7 +174,9 @@
       status: false,
       autofocus: false,
       placeholder:
-        "在此编写 Markdown…\n\n可粘贴截图/文件（Ctrl+V）、拖入文件，或点工具栏「上传」添加图片与附件（单文件 ≤10MB）。",
+        "在此编写 Markdown…\n\n可粘贴截图/文件（Ctrl+V）、拖入文件，或点工具栏「上传」添加图片与附件（单文件 ≤" +
+        maxUploadMBLabel() +
+        "MB）。",
       minHeight: "260px",
       autoDownloadFontAwesome: true,
       renderingConfig: {
@@ -196,7 +205,7 @@
             triggerNoteMediaUpload();
           },
           className: "fa fa-cloud-upload",
-          title: "上传图片或附件（任意格式，单文件 ≤10MB）",
+          title: "上传图片或附件（任意格式，单文件 ≤" + maxUploadMBLabel() + "MB）",
         },
         "|",
         "table",
@@ -252,6 +261,9 @@
       authGitHubOAuth = j.githubOAuth === true;
       authGiteeOAuth = j.giteeOAuth === true;
       authUser = j.user && typeof j.user === "object" ? j.user : null;
+      if (typeof j.maxUploadBytes === "number" && j.maxUploadBytes > 0) {
+        maxUploadBytes = j.maxUploadBytes;
+      }
     } catch {
       authConfigured = false;
       authEnabled = false;
@@ -1148,8 +1160,6 @@
     ta.focus();
   }
 
-  const maxUploadBytes = 10 << 20;
-
   async function uploadMediaFile(file) {
     if (!activeId) throw new Error("无活动笔记");
     const fd = new FormData();
@@ -1198,7 +1208,7 @@
     if (!getActiveNote() || !files.length) return;
     for (const file of files) {
       if (file.size > maxUploadBytes) {
-        setSavedHint("文件过大（单文件最大 10MB）");
+        setSavedHint("文件过大（单文件最大 " + maxUploadMBLabel() + "MB）");
         setTimeout(() => setSavedHint(""), 3500);
         return;
       }
