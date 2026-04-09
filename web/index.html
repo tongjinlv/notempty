@@ -2,11 +2,12 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>笔记云</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>笔记</title>
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any" />
   <link rel="apple-touch-icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/vendor/easymde/easymde.min.css?v=2.18.0" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -14,7 +15,16 @@
     <aside class="sidebar" id="sidebar" aria-label="笔记列表">
       <header class="sidebar-header">
         <h1 class="logo">
-          <img class="logo-icon" src="/favicon.svg" width="28" height="28" alt="" decoding="async" />
+          <a
+            href="/public"
+            class="logo-public-link"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="公共手记"
+            aria-label="打开公共手记"
+          >
+            <img class="logo-icon" src="/favicon.svg" width="28" height="28" alt="" decoding="async" />
+          </a>
           <span class="logo-text">笔记</span>
         </h1>
         <div class="sidebar-actions">
@@ -37,14 +47,24 @@
       </header>
       <label class="search-wrap">
         <span class="sr-only">搜索笔记</span>
-        <input type="search" id="search" class="search-input" placeholder="标题或正文；空格=同时包含多词" autocomplete="off" title="按 / 快速聚焦；↓ 进入列表" />
+        <input type="search" id="search" class="search-input" placeholder="标题、正文、标签、分类；空格=同时包含多词" autocomplete="off" title="按 / 快速聚焦；↓ 进入列表" />
       </label>
       <ul class="note-list" id="note-list" role="list"></ul>
-      <div id="auth-bar" class="auth-bar hidden" aria-label="登录状态"></div>
-      <p class="sidebar-footer" id="note-count"></p>
+      <div class="sidebar-footer-bar">
+        <div id="auth-bar" class="auth-bar hidden" aria-label="登录状态"></div>
+        <p class="sidebar-note-count" id="note-count" aria-live="polite"></p>
+      </div>
     </aside>
 
     <main class="editor-panel" id="editor-panel">
+      <button
+        type="button"
+        class="sidebar-backdrop"
+        id="sidebar-backdrop"
+        tabindex="-1"
+        aria-label="关闭笔记列表"
+        aria-hidden="true"
+      ></button>
       <button
         type="button"
         class="sidebar-expand-fab"
@@ -58,11 +78,32 @@
       </button>
       <div class="empty-state" id="empty-state">
         <p class="empty-title">选择或创建一条笔记</p>
-        <p class="empty-hint">左侧点「新建」，或从列表中选择已有笔记。</p>
+        <p class="empty-hint">从左侧列表选一条，或先「新建」。窄屏请先点 ☰ 或下方按钮打开列表。</p>
+        <button type="button" class="btn btn-primary empty-open-list" id="btn-empty-open-list">
+          打开笔记列表
+        </button>
       </div>
 
       <div class="editor-wrap hidden" id="editor-wrap">
+        <input
+          type="file"
+          id="note-image-file"
+          class="note-image-file-input"
+          accept="*/*"
+          multiple
+          tabindex="-1"
+          aria-hidden="true"
+        />
         <header class="editor-toolbar">
+          <button
+            type="button"
+            class="btn btn-ghost icon-btn editor-mobile-menu"
+            id="btn-mobile-menu"
+            aria-label="打开笔记列表"
+            title="笔记列表"
+          >
+            <span class="icon-sidebar-menu" aria-hidden="true"></span>
+          </button>
           <input
             type="text"
             id="note-title"
@@ -73,21 +114,52 @@
           />
           <div class="toolbar-right">
             <span class="saved-hint" id="saved-hint" aria-live="polite"></span>
+            <label class="toolbar-public-opt">
+              <input type="checkbox" id="note-public" />
+              <span>公开</span>
+            </label>
             <button type="button" class="btn btn-danger btn-sm" id="btn-delete">删除</button>
           </div>
         </header>
         <div class="editor-subbar">
-          <div class="view-tabs" role="tablist" aria-label="正文视图">
-            <button type="button" class="tab" id="tab-edit" role="tab" aria-selected="false">编辑</button>
-            <button type="button" class="tab active" id="tab-preview" role="tab" aria-selected="true">预览</button>
+          <div class="editor-subbar-main">
+            <div class="view-tabs" role="tablist" aria-label="正文视图">
+              <button type="button" class="tab" id="tab-edit" role="tab" aria-selected="false">编辑</button>
+              <button type="button" class="tab active" id="tab-preview" role="tab" aria-selected="true">预览</button>
+            </div>
+            <div class="note-meta-fields" aria-label="标签与分类">
+              <label class="note-meta-label">
+                <span class="note-meta-label-text">标签</span>
+                <input
+                  type="text"
+                  id="note-tags"
+                  class="note-meta-input"
+                  placeholder="技术、Hugo"
+                  maxlength="800"
+                  autocomplete="off"
+                  aria-label="标签，逗号或顿号分隔"
+                />
+              </label>
+              <label class="note-meta-label">
+                <span class="note-meta-label-text">分类</span>
+                <input
+                  type="text"
+                  id="note-categories"
+                  class="note-meta-input"
+                  placeholder="技术教程"
+                  maxlength="800"
+                  autocomplete="off"
+                  aria-label="分类，逗号或顿号分隔"
+                />
+              </label>
+            </div>
           </div>
-          <span class="md-hint">Markdown，支持粘贴或拖入图片</span>
         </div>
         <div class="editor-main" id="editor-main">
           <textarea
             id="note-body"
             class="note-body hidden"
-            placeholder="在此编写 Markdown…&#10;&#10;可粘贴截图（Ctrl+V）或将图片拖入此区域。"
+            placeholder="在此编写 Markdown…&#10;&#10;可粘贴截图（Ctrl+V）、拖入图片，或使用编辑模式下工具栏「上传」从相册/相机添加。"
             spellcheck="true"
             aria-label="笔记正文 Markdown"
           ></textarea>
@@ -106,11 +178,15 @@
     <div class="auth-gate-panel">
       <p id="auth-gate-title" class="auth-gate-title">需要登录后才能使用笔记</p>
       <p id="auth-gate-config" class="auth-gate-hint hidden"></p>
-      <p id="auth-gate-hint-login" class="auth-gate-hint">点击下方按钮将跳转到 GitHub 完成授权，完成后会自动回到笔记页。</p>
-      <button type="button" id="btn-github-login" class="btn btn-primary auth-github-btn">使用 GitHub 登录</button>
+      <p id="auth-gate-hint-login" class="auth-gate-hint">点击下方按钮将跳转到 GitHub 或 Gitee 完成授权，完成后会自动回到笔记页。</p>
+      <div class="auth-gate-buttons">
+        <button type="button" id="btn-github-login" class="btn btn-primary auth-oauth-btn">GitHub 登录</button>
+        <button type="button" id="btn-gitee-login" class="btn btn-primary auth-oauth-btn auth-oauth-btn-gitee">Gitee 登录</button>
+      </div>
     </div>
   </div>
 
+  <script src="/vendor/easymde/easymde.min.js?v=2.18.0"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -18,15 +18,40 @@ type GitHubOAuthConfig struct {
 	AllowedLogins []string `json:"allowedLogins"`
 }
 
+// GiteeOAuthConfig 与 GitHub 字段相同；在 Gitee 创建第三方应用，回调填 /auth/gitee/callback。
+type GiteeOAuthConfig struct {
+	ClientID      string   `json:"clientId"`
+	ClientSecret  string   `json:"clientSecret"`
+	CallbackURL   string   `json:"callbackUrl"`
+	CookieSecret  string   `json:"cookieSecret"`
+	AllowedLogins []string `json:"allowedLogins"`
+}
+
 // appConfig 对应 notes-config.json；缺省 listen 为 :8787。
 type appConfig struct {
 	Listen      string             `json:"listen"`
 	Data        string             `json:"data"`
+	MaxUploadMB int                `json:"maxUploadMB"` // 单文件上传上限（MB），≤0 或未填为 10；最大 512
 	GitHubOAuth *GitHubOAuthConfig `json:"githubOAuth"`
+	GiteeOAuth  *GiteeOAuthConfig  `json:"giteeOAuth"`
 }
 
 func defaultAppConfig() appConfig {
 	return appConfig{Listen: ":8787"}
+}
+
+// normalizeMaxUploadBytes 根据配置中的 maxUploadMB 得到字节数；≤0 视为默认 10MB；超过 512MB 时截断为 512MB。
+func normalizeMaxUploadBytes(maxUploadMB int) int64 {
+	const defaultMB = 10
+	const capMB = 512
+	mb := maxUploadMB
+	if mb <= 0 {
+		mb = defaultMB
+	}
+	if mb > capMB {
+		mb = capMB
+	}
+	return int64(mb) << 20
 }
 
 func executableDir() (string, error) {

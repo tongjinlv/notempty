@@ -3,19 +3,31 @@
 
   const THEME_KEY = "local-notes-theme";
   const SIDEBAR_KEY = "local-notes-sidebar-collapsed";
+  /** localStorage：折叠的年月键 YYYY-MM 数组 */
+  const MONTH_COLLAPSED_KEY = "local-notes-sidebar-month-collapsed";
   /** 单条笔记正文参与检索的最大字符数，避免极大文件拖慢输入 */
   const SEARCH_BODY_MAX_CHARS = 24000;
   const SEARCH_LIST_DEBOUNCE_MS = 110;
   const VIRTUAL_ROW_ESTIMATE_PX = 68;
+  /** 侧栏年月分组标题行近似高度（与 CSS .note-list-group 一致） */
+  const GROUP_ROW_HEIGHT = 32;
   const VIRTUAL_OVERSCAN = 8;
 
-  /** @typedef {{ id: string, title: string, body: string, updatedAt: number, dir: string }} Note */
+  const mobileLayoutMq = window.matchMedia("(max-width: 720px)");
+  function isMobileLayout() {
+    return mobileLayoutMq.matches;
+  }
+
+  /** @typedef {{ id: string, title: string, body: string, updatedAt: number, dir: string, public?: boolean, tags?: string[], categories?: string[] }} Note */
 
   const els = {
     app: document.getElementById("app"),
     sidebar: document.getElementById("sidebar"),
+    sidebarBackdrop: document.getElementById("sidebar-backdrop"),
     btnSidebarCollapse: document.getElementById("btn-sidebar-collapse"),
     btnSidebarExpand: document.getElementById("btn-sidebar-expand"),
+    btnMobileMenu: document.getElementById("btn-mobile-menu"),
+    btnEmptyOpenList: document.getElementById("btn-empty-open-list"),
     noteList: document.getElementById("note-list"),
     search: document.getElementById("search"),
     btnNew: document.getElementById("btn-new"),
@@ -31,6 +43,10 @@
     tabPreview: document.getElementById("tab-preview"),
     savedHint: document.getElementById("saved-hint"),
     noteCount: document.getElementById("note-count"),
+    notePublic: document.getElementById("note-public"),
+    noteTags: document.getElementById("note-tags"),
+    noteCategories: document.getElementById("note-categories"),
+    noteImageFile: document.getElementById("note-image-file"),
   };
 
   /** @type {Note[]} */
@@ -41,21 +57,184 @@
   let hintTimer = null;
   /** @type {"edit" | "preview"} */
   let viewMode = "preview";
-  /** 当前笔记在仓库中的相对目录，如 2026/03/24/n_xxx，用于解析相对路径图片 */
+  /** 当前笔记在仓库中的相对目录，如 2026-03/n_xxx（兼容旧版 202603/n_xxx、2026/03/n_xxx、2026/03/24/n_xxx） */
   let activeNoteDir = "";
+  /** 与磁盘已一致时的编辑器快照；无改动时不 PUT（避免「新建」前误保存当前笔记导致 updated 被刷新） */
+  let persistedEditorState = null;
   let searchListTimer = null;
   /** @type {Note[]} 当前列表展示的过滤结果（与虚拟列表同步） */
   let virtualFiltered = [];
+  /**
+   * 分组后的侧栏行：group = 年月标题（可折叠）；note = 一条笔记。
+   * @type {{ type: 'group', key: string, label: string, count: number, collapsed: boolean } | { type: 'note', note: Note, noteIndex: number }}[]
+   */
+  let virtualListRows = [];
+  /** 已折叠的年月键 YYYY-MM（不展示该月下的笔记行） */
+  let monthCollapsed = new Set();
+  /** 行顶 y 前缀和，长度 = virtualListRows.length + 1 */
+  let listPrefix = [0];
   /** 0 表示尚未测量，用 VIRTUAL_ROW_ESTIMATE_PX */
   let virtualRowHeightPx = 0;
   let virtualListScrollRaf = 0;
   let authConfigured = false;
   let authEnabled = false;
+  /** @type {boolean | undefined} */
+  let authGitHubOAuth = false;
+  /** @type {boolean | undefined} */
+  let authGiteeOAuth = false;
   /** @type {{ login: string, name?: string, avatarUrl?: string } | null} */
   let authUser = null;
+  /** 单文件上传上限（字节），与 notes-config.json 的 maxUploadMB 及 /api/auth/status 的 maxUploadBytes 一致 */
+  let maxUploadBytes = 10 << 20;
+
+  function maxUploadMBLabel() {
+    const mb = Math.round(maxUploadBytes / (1024 * 1024));
+    return mb > 0 ? mb : 10;
+  }
+
+  /** EasyMDE 实例；未加载或降级时为 null */
+  let mdEditor = null;
+
+  function triggerNoteMediaUpload() {
+    if (!getActiveNote()) {
+      setSavedHint("请先打开一条笔记");
+      setTimeout(() => setSavedHint(""), 2000);
+      return;
+    }
+    els.noteImageFile?.click();
+  }
+
+  function getBodyText() {
+    if (mdEditor) return mdEditor.value();
+    return els.body.value;
+  }
+
+  function setBodyText(s) {
+    const t = String(s);
+    if (mdEditor) mdEditor.value(t);
+    else els.body.value = t;
+  }
+
+  function normalizeBodyText(s) {
+    return String(s).replace(/\r\n/g, "\n");
+  }
+
+  function sigMetaList(arr) {
+    if (!arr || !arr.length) return "";
+    return JSON.stringify([...arr].map(String).sort());
+  }
+
+  function snapshotEditorFromNote(note) {
+    return {
+      title: note.title ?? "",
+      body: normalizeBodyText(note.body ?? ""),
+      public: !!note.public,
+      tags: sigMetaList(note.tags),
+      categories: sigMetaList(note.categories),
+    };
+  }
+
+  function snapshotEditorFromDOM() {
+    const tags = els.noteTags ? inputToStringList(els.noteTags.value) : [];
+    const categories = els.noteCategories ? inputToStringList(els.noteCategories.value) : [];
+    return {
+      title: els.title.value,
+      body: normalizeBodyText(getBodyText()),
+      public: els.notePublic ? !!els.notePublic.checked : false,
+      tags: sigMetaList(tags),
+      categories: sigMetaList(categories),
+    };
+  }
+
+  function isEditorDirty() {
+    if (!activeId) return false;
+    if (!persistedEditorState) return true;
+    const cur = snapshotEditorFromDOM();
+    const p = persistedEditorState;
+    return (
+      cur.title !== p.title ||
+      cur.body !== p.body ||
+      cur.public !== p.public ||
+      cur.tags !== p.tags ||
+      cur.categories !== p.categories
+    );
+  }
+
+  function syncPersistedEditorFromDOM() {
+    persistedEditorState = snapshotEditorFromDOM();
+  }
+
+  /** @returns {boolean} */
+  function ensureEasyMDE() {
+    if (mdEditor) return true;
+    if (typeof EasyMDE === "undefined") return false;
+    mdEditor = new EasyMDE({
+      element: els.body,
+      spellChecker: false,
+      status: false,
+      autofocus: false,
+      placeholder:
+        "在此编写 Markdown…\n\n可粘贴截图/文件（Ctrl+V）、拖入文件，或点工具栏「上传」添加图片与附件（单文件 ≤" +
+        maxUploadMBLabel() +
+        "MB）。",
+      minHeight: "260px",
+      autoDownloadFontAwesome: true,
+      renderingConfig: {
+        singleLineBreaks: false,
+      },
+      toolbar: [
+        "bold",
+        "italic",
+        "strikethrough",
+        "|",
+        "heading-1",
+        "heading-2",
+        "heading-3",
+        "|",
+        "code",
+        "quote",
+        "|",
+        "unordered-list",
+        "ordered-list",
+        "|",
+        "link",
+        "image",
+        {
+          name: "upload-image",
+          action: function () {
+            triggerNoteMediaUpload();
+          },
+          className: "fa fa-cloud-upload",
+          title: "上传图片或附件（任意格式，单文件 ≤" + maxUploadMBLabel() + "MB）",
+        },
+        "|",
+        "table",
+        "|",
+        "horizontal-rule",
+        "|",
+        "fullscreen",
+        "|",
+        "guide",
+      ],
+    });
+    mdEditor.codemirror.on("change", () => {
+      scheduleSave();
+    });
+    return true;
+  }
+
+  function insertIntoEditor(text) {
+    if (mdEditor) {
+      const cm = mdEditor.codemirror;
+      cm.replaceSelection(text);
+      cm.focus();
+    } else {
+      insertAtCursor(els.body, text);
+    }
+  }
 
   function noteCountWhenNoNotes() {
-    if (!authConfigured) return "配置 githubOAuth 并重启服务后可用";
+    if (!authConfigured) return "配置 githubOAuth 或 giteeOAuth 并重启服务后可用";
     if (authEnabled && !authUser) return "登录后加载笔记";
     return "暂无笔记";
   }
@@ -79,10 +258,17 @@
       const j = await r.json();
       authConfigured = !!j.configured;
       authEnabled = !!j.enabled;
+      authGitHubOAuth = j.githubOAuth === true;
+      authGiteeOAuth = j.giteeOAuth === true;
       authUser = j.user && typeof j.user === "object" ? j.user : null;
+      if (typeof j.maxUploadBytes === "number" && j.maxUploadBytes > 0) {
+        maxUploadBytes = j.maxUploadBytes;
+      }
     } catch {
       authConfigured = false;
       authEnabled = false;
+      authGitHubOAuth = false;
+      authGiteeOAuth = false;
       authUser = null;
     }
     applyAuthUI();
@@ -96,15 +282,19 @@
     const hintLogin = document.getElementById("auth-gate-hint-login");
 
     if (!authConfigured) {
+      const btnGhEarly = document.getElementById("btn-github-login");
+      const btnGiteeEarly = document.getElementById("btn-gitee-login");
+      if (btnGhEarly) btnGhEarly.classList.remove("hidden");
+      if (btnGiteeEarly) btnGiteeEarly.classList.remove("hidden");
       if (gate) gate.classList.remove("hidden");
-      if (titleEl) titleEl.textContent = "尚未配置 GitHub 登录";
+      if (titleEl) titleEl.textContent = "尚未配置 OAuth 登录";
       if (configEl) {
         configEl.textContent =
-          "请在 notes-config.json 中添加 githubOAuth（clientId、clientSecret、callbackUrl、cookieSecret），保存后重启本程序。";
+          "请在 notes-config.json 中添加 githubOAuth 和/或 giteeOAuth（clientId、clientSecret、callbackUrl、cookieSecret），保存后重启本程序。";
         configEl.classList.remove("hidden");
       }
       if (hintLogin) {
-        hintLogin.textContent = "配置并重启后，点下面按钮会跳转到 GitHub（未配置时会先看到说明页）。";
+        hintLogin.textContent = "配置并重启后，点下面按钮会跳转到 GitHub 或 Gitee（未配置时会先看到说明页）。";
         hintLogin.classList.remove("hidden");
       }
       if (!bar) return;
@@ -118,10 +308,15 @@
       configEl.classList.add("hidden");
     }
     if (hintLogin) {
-      hintLogin.textContent = "点击下方按钮将跳转到 GitHub 授权，完成后会回到本页。";
+      hintLogin.textContent = "点击下方按钮将跳转到 GitHub 或 Gitee 授权，完成后会回到本页。";
       hintLogin.classList.remove("hidden");
     }
     if (titleEl) titleEl.textContent = "需要登录后才能使用笔记";
+
+    const btnGh = document.getElementById("btn-github-login");
+    const btnGitee = document.getElementById("btn-gitee-login");
+    if (btnGh) btnGh.classList.toggle("hidden", authConfigured && !authGitHubOAuth);
+    if (btnGitee) btnGitee.classList.toggle("hidden", authConfigured && !authGiteeOAuth);
 
     if (gate) gate.classList.toggle("hidden", !(!authUser));
     if (!bar) return;
@@ -156,11 +351,14 @@
   function clearAppForLogout() {
     notes = [];
     activeId = null;
+    persistedEditorState = null;
     activeNoteDir = "";
     virtualRowHeightPx = 0;
     virtualFiltered = [];
     els.title.value = "";
-    els.body.value = "";
+    setBodyText("");
+    if (els.noteTags) els.noteTags.value = "";
+    if (els.noteCategories) els.noteCategories.value = "";
     els.preview.innerHTML = "";
     showEditor(false);
     if (searchListTimer) {
@@ -210,11 +408,61 @@
     els.btnSidebarCollapse.setAttribute("aria-expanded", collapsed ? "false" : "true");
     if (collapsed) els.btnSidebarExpand.removeAttribute("hidden");
     else els.btnSidebarExpand.setAttribute("hidden", "");
+    if (els.sidebarBackdrop) {
+      els.sidebarBackdrop.setAttribute("aria-hidden", collapsed ? "true" : "false");
+      if (collapsed && document.activeElement === els.sidebarBackdrop) {
+        els.btnMobileMenu?.focus();
+      }
+    }
     localStorage.setItem(SIDEBAR_KEY, collapsed ? "1" : "0");
   }
 
   function loadSidebarState() {
     applySidebarCollapsed(localStorage.getItem(SIDEBAR_KEY) === "1");
+  }
+
+  function loadMonthCollapsedState() {
+    try {
+      const raw = localStorage.getItem(MONTH_COLLAPSED_KEY);
+      if (!raw) return;
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return;
+      monthCollapsed = new Set(arr.filter((x) => typeof x === "string"));
+    } catch {
+      monthCollapsed = new Set();
+    }
+  }
+
+  function saveMonthCollapsed() {
+    try {
+      localStorage.setItem(MONTH_COLLAPSED_KEY, JSON.stringify([...monthCollapsed]));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** 当前列表与搜索不变时，仅按折叠状态重建行与前缀 */
+  function rebuildVirtualListRows() {
+    if (!virtualFiltered.length) {
+      virtualListRows = [];
+      listPrefix = [0];
+      return;
+    }
+    virtualListRows = buildGroupedListRows(virtualFiltered);
+    listPrefix = computeListPrefix(virtualListRows);
+  }
+
+  function tryToggleMonthCollapse(key) {
+    if (!key) return;
+    if (monthCollapsed.has(key)) monthCollapsed.delete(key);
+    else monthCollapsed.add(key);
+    saveMonthCollapsed();
+    rebuildVirtualListRows();
+    const listEl = els.noteList;
+    const totalH = listPrefix[listPrefix.length - 1];
+    listEl.scrollTop = Math.min(listEl.scrollTop, Math.max(0, totalH - listEl.clientHeight));
+    renderVirtualWindow();
+    applyListTabIndices();
   }
 
   function collapseSidebar() {
@@ -226,7 +474,11 @@
 
   function expandSidebar() {
     applySidebarCollapsed(false);
-    els.btnSidebarCollapse?.focus();
+    if (isMobileLayout()) {
+      queueMicrotask(() => els.search?.focus());
+    } else {
+      els.btnSidebarCollapse?.focus();
+    }
   }
 
   function toggleTheme() {
@@ -236,6 +488,9 @@
     virtualRowHeightPx = 0;
     queueMicrotask(() => {
       if (virtualFiltered.length) renderVirtualWindow();
+      if (mdEditor) {
+        requestAnimationFrame(() => mdEditor.codemirror.refresh());
+      }
     });
   }
 
@@ -289,8 +544,23 @@
       .filter((t) => t.length > 0);
   }
 
+  /** @param {string[] | undefined} arr */
+  function stringListToInput(arr) {
+    if (!arr || !arr.length) return "";
+    return arr.join("、");
+  }
+
+  /** @param {string} s */
+  function inputToStringList(s) {
+    return s
+      .split(/[,，;；、\s]+/)
+      .map((x) => String(x).trim())
+      .filter(Boolean);
+  }
+
   /**
-   * 无搜索词时顺序与 API 一致；有搜索时：空格分词须全部命中（标题或正文前段），标题命中数多的排前。
+   * 无搜索词时顺序与 API 一致；有搜索时：空格分词须全部命中（标题、正文前段、标签、分类），
+   * 排序优先标题命中数，其次标签/分类命中数，再按更新时间。
    */
   function filterNotes(query) {
     const tokens = searchTokens(query);
@@ -302,27 +572,134 @@
       const bodySlice =
         n.body.length > SEARCH_BODY_MAX_CHARS ? n.body.slice(0, SEARCH_BODY_MAX_CHARS) : n.body;
       const bodyL = bodySlice.toLowerCase();
+      const tagsL = (Array.isArray(n.tags) ? n.tags : []).join(" ").toLowerCase();
+      const catsL = (Array.isArray(n.categories) ? n.categories : []).join(" ").toLowerCase();
 
       let titleHits = 0;
+      let metaHits = 0;
       let ok = true;
       for (const t of tokens) {
         const inT = titleL.includes(t);
         const inB = bodyL.includes(t);
-        if (!inT && !inB) {
+        const inTag = tagsL.includes(t);
+        const inCat = catsL.includes(t);
+        if (!inT && !inB && !inTag && !inCat) {
           ok = false;
           break;
         }
         if (inT) titleHits++;
+        else if (inTag || inCat) metaHits++;
       }
       if (!ok) continue;
-      scored.push({ n, titleHits, updatedAt: n.updatedAt });
+      scored.push({ n, titleHits, metaHits, updatedAt: n.updatedAt });
     }
 
     scored.sort((a, b) => {
       if (b.titleHits !== a.titleHits) return b.titleHits - a.titleHits;
+      if (b.metaHits !== a.metaHits) return b.metaHits - a.metaHits;
       return b.updatedAt - a.updatedAt;
     });
     return scored.map((x) => x.n);
+  }
+
+  /**
+   * 从 note.dir 解析年月分组键：YYYY-MM。
+   * 兼容路径中任意位置的 YYYY-MM / YYYYMM / YYYY/MM/…（避免多段路径误用前两级拼成 users-gitee 等）。
+   */
+  function yearMonthKeyFromDir(dir) {
+    if (!dir || typeof dir !== "string") return "其他";
+    const parts = dir.split("/").filter(Boolean);
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      if (/^(19|20)\d{2}-\d{2}$/.test(p)) return p;
+      if (/^(19|20)\d{4}$/.test(p)) return p.slice(0, 4) + "-" + p.slice(4, 6);
+    }
+    for (let i = 0; i < parts.length - 1; i++) {
+      const a = parts[i];
+      const b = parts[i + 1];
+      if (/^(19|20)\d{2}$/.test(a) && /^\d{1,2}$/.test(b)) {
+        const mm = b.length === 1 ? "0" + b : b;
+        return a + "-" + mm.slice(-2);
+      }
+    }
+    return "其他";
+  }
+
+  function formatYearMonthLabel(key) {
+    if (/^(19|20)\d{2}-\d{2}$/.test(key)) {
+      const [y, m] = key.split("-");
+      return y + "年" + String(parseInt(m, 10)) + "月";
+    }
+    return key || "其他";
+  }
+
+  function buildGroupedListRows(notes) {
+    /** @type {{ type: 'group', key: string, label: string, count: number, collapsed: boolean } | { type: 'note', note: Note, noteIndex: number }}[] */
+    const rows = [];
+    if (!notes.length) return rows;
+    const counts = new Map();
+    for (const n of notes) {
+      const k = yearMonthKeyFromDir(n.dir);
+      counts.set(k, (counts.get(k) || 0) + 1);
+    }
+    let lastKey = null;
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const key = yearMonthKeyFromDir(n.dir);
+      if (key !== lastKey) {
+        const cnt = counts.get(key) || 0;
+        const collapsed = monthCollapsed.has(key);
+        rows.push({ type: "group", key, label: formatYearMonthLabel(key), count: cnt, collapsed });
+        lastKey = key;
+      }
+      if (!monthCollapsed.has(key)) {
+        rows.push({ type: "note", note: n, noteIndex: i });
+      }
+    }
+    return rows;
+  }
+
+  function computeListPrefix(rows) {
+    const nH = effectiveRowHeightPx();
+    const gH = GROUP_ROW_HEIGHT;
+    const prefix = [0];
+    for (let i = 0; i < rows.length; i++) {
+      const h = rows[i].type === "group" ? gH : nH;
+      prefix.push(prefix[prefix.length - 1] + h);
+    }
+    return prefix;
+  }
+
+  /** 首个满足 prefix[i+1] > y 的行下标 i */
+  function findFirstRowBelowY(prefix, y, n) {
+    let lo = 0;
+    let hi = n;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (prefix[mid + 1] <= y) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /** 首个满足 prefix[i] >= y 的行下标 i（0..nRows，用于切片上沿 exclusive end） */
+  function findFirstRowStartGe(prefix, y, nRows) {
+    let lo = 0;
+    let hi = nRows + 1;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (prefix[mid] < y) lo = mid + 1;
+      else hi = mid;
+    }
+    return Math.min(lo, nRows);
+  }
+
+  function noteIndexToRowIndex(noteIdx) {
+    for (let r = 0; r < virtualListRows.length; r++) {
+      const row = virtualListRows[r];
+      if (row.type === "note" && row.noteIndex === noteIdx) return r;
+    }
+    return -1;
   }
 
   function effectiveRowHeightPx() {
@@ -343,14 +720,48 @@
   }
 
   function clampScrollToShowIndex(idx) {
+    const n = virtualFiltered[idx];
+    if (n) {
+      const key = yearMonthKeyFromDir(n.dir);
+      if (monthCollapsed.has(key)) {
+        monthCollapsed.delete(key);
+        saveMonthCollapsed();
+        rebuildVirtualListRows();
+      }
+    }
     const listEl = els.noteList;
+    const r = noteIndexToRowIndex(idx);
+    if (r < 0) return;
     const rh = effectiveRowHeightPx();
     const viewH = listEl.clientHeight;
-    const top = idx * rh;
+    const top = listPrefix[r];
     let st = listEl.scrollTop;
     if (top < st) st = top;
     else if (top + rh > st + viewH) st = top + rh - viewH;
     listEl.scrollTop = st;
+  }
+
+  function createGroupLi(row) {
+    const li = document.createElement("li");
+    li.className = "note-list-group";
+    li.setAttribute("role", "presentation");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "note-list-group-btn";
+    btn.setAttribute("data-month-key", row.key);
+    btn.setAttribute("aria-expanded", row.collapsed ? "false" : "true");
+    const chev = document.createElement("span");
+    chev.className = "note-list-group-chevron" + (row.collapsed ? " is-collapsed" : "");
+    chev.setAttribute("aria-hidden", "true");
+    const lab = document.createElement("span");
+    lab.className = "note-list-group-label";
+    lab.textContent = row.label;
+    const cnt = document.createElement("span");
+    cnt.className = "note-list-group-count";
+    cnt.textContent = " · " + row.count;
+    btn.append(chev, lab, cnt);
+    li.append(btn);
+    return li;
   }
 
   function createNoteItemLi(note) {
@@ -397,28 +808,35 @@
 
   function renderVirtualWindow() {
     const listEl = els.noteList;
-    const n = virtualFiltered.length;
-    if (n === 0) {
+    const nRows = virtualListRows.length;
+    if (virtualFiltered.length === 0 || nRows === 0) {
       listEl.innerHTML = "";
       return;
     }
 
     const rh = effectiveRowHeightPx();
+    const maxH = Math.max(rh, GROUP_ROW_HEIGHT);
+    const padPx = VIRTUAL_OVERSCAN * maxH;
     const st = listEl.scrollTop;
     const viewH = Math.max(listEl.clientHeight, 1);
+    const totalH = listPrefix[listPrefix.length - 1];
+
     let start = 0;
-    let end = n;
+    let end = nRows;
     if (viewH > 1) {
-      start = Math.floor(st / rh) - VIRTUAL_OVERSCAN;
-      end = Math.ceil((st + viewH) / rh) + VIRTUAL_OVERSCAN;
+      const y0 = Math.max(0, st - padPx);
+      const y1 = st + viewH + padPx;
+      start = findFirstRowBelowY(listPrefix, y0, nRows);
+      end = findFirstRowStartGe(listPrefix, y1, nRows);
       start = Math.max(0, start);
-      end = Math.min(n, end);
+      end = Math.min(nRows, end);
+      if (end < start) end = start;
     } else {
-      end = Math.min(n, 48);
+      end = Math.min(nRows, 48);
     }
 
-    const topPad = start * rh;
-    const bottomPad = (n - end) * rh;
+    const topPad = listPrefix[start];
+    const bottomPad = Math.max(0, totalH - listPrefix[end]);
 
     const frag = document.createDocumentFragment();
     const padTop = document.createElement("li");
@@ -428,12 +846,14 @@
     frag.append(padTop);
 
     for (let i = start; i < end; i++) {
-      frag.append(createNoteItemLi(virtualFiltered[i]));
+      const row = virtualListRows[i];
+      if (row.type === "group") frag.append(createGroupLi(row));
+      else frag.append(createNoteItemLi(row.note));
     }
 
     const padBot = document.createElement("li");
     padBot.className = "note-list-pad note-list-pad-bottom";
-    padBot.style.height = Math.max(0, bottomPad) + "px";
+    padBot.style.height = bottomPad + "px";
     padBot.setAttribute("aria-hidden", "true");
     frag.append(padBot);
 
@@ -450,13 +870,20 @@
     if (firstItem && virtualRowHeightPx === 0) {
       const measured = measureNoteItemRowHeight(firstItem);
       if (measured > 0 && Math.abs(measured - rh) >= 1) {
+        const oldTotal = listPrefix[listPrefix.length - 1];
         virtualRowHeightPx = measured;
-        const maxScroll = Math.max(0, n * measured - listEl.clientHeight);
-        listEl.scrollTop = Math.min(Math.round((st / rh) * measured), maxScroll);
+        listPrefix = computeListPrefix(virtualListRows);
+        const newTotal = listPrefix[listPrefix.length - 1];
+        const maxScroll = Math.max(0, newTotal - listEl.clientHeight);
+        listEl.scrollTop = Math.min(
+          Math.round(oldTotal > 0 ? (st / oldTotal) * newTotal : 0),
+          maxScroll
+        );
         renderVirtualWindow();
         return;
       }
       virtualRowHeightPx = measured || VIRTUAL_ROW_ESTIMATE_PX;
+      listPrefix = computeListPrefix(virtualListRows);
     }
 
     if (focusId) {
@@ -500,6 +927,8 @@
     if (virtualFiltered.length === 0) {
       listEl.innerHTML = "";
       listEl.scrollTop = 0;
+      virtualListRows = [];
+      listPrefix = [0];
       virtualRowHeightPx = 0;
       applyListTabIndices();
       if (notes.length === 0) els.noteCount.textContent = noteCountWhenNoNotes();
@@ -512,8 +941,12 @@
       return;
     }
 
+    virtualListRows = buildGroupedListRows(virtualFiltered);
+    listPrefix = computeListPrefix(virtualListRows);
+
     const rh = effectiveRowHeightPx();
-    const maxScroll = Math.max(0, virtualFiltered.length * rh - listEl.clientHeight);
+    const totalH = listPrefix[listPrefix.length - 1];
+    const maxScroll = Math.max(0, totalH - listEl.clientHeight);
     listEl.scrollTop = Math.min(prevScrollTop, maxScroll);
 
     if (wasListBtn && prevListId) {
@@ -581,7 +1014,16 @@
     const u = String(url).trim();
     if (/^javascript:/i.test(u) || /^data:/i.test(u)) return null;
     if (/^https?:\/\//i.test(u)) return u;
+    if (u.startsWith("/api/vault/") || u.startsWith("/api/media/")) return u;
     if (u.startsWith("/") && !u.startsWith("//")) return u;
+    if (activeNoteDir && !u.includes("://") && !u.startsWith("//")) {
+      const rel = u.replace(/^\.\//, "");
+      if (rel.startsWith("/") || rel.includes("..")) return null;
+      const segs = activeNoteDir.split("/").filter(Boolean).map(encodeURIComponent);
+      const fileSegs = rel.split("/").filter(Boolean).map(encodeURIComponent);
+      if (!fileSegs.length) return null;
+      return "/api/vault/" + segs.join("/") + "/" + fileSegs.join("/");
+    }
     return null;
   }
 
@@ -682,19 +1124,30 @@
   }
 
   function updatePreview() {
-    els.preview.innerHTML = renderMarkdown(els.body.value);
+    els.preview.innerHTML = renderMarkdown(getBodyText());
   }
 
   function setViewMode(mode) {
     viewMode = mode;
     const edit = mode === "edit";
+    if (edit) ensureEasyMDE();
     els.tabEdit.classList.toggle("active", edit);
     els.tabPreview.classList.toggle("active", !edit);
     els.tabEdit.setAttribute("aria-selected", edit ? "true" : "false");
     els.tabPreview.setAttribute("aria-selected", edit ? "false" : "true");
-    els.body.classList.toggle("hidden", !edit);
+    const wrap = els.editorMain && els.editorMain.querySelector(".EasyMDEContainer");
+    if (wrap) {
+      wrap.classList.toggle("hidden", !edit);
+    } else {
+      els.body.classList.toggle("hidden", !edit);
+    }
     els.preview.classList.toggle("hidden", edit);
     if (!edit) updatePreview();
+    if (edit && mdEditor) {
+      requestAnimationFrame(() => {
+        mdEditor.codemirror.refresh();
+      });
+    }
   }
 
   function insertAtCursor(ta, text) {
@@ -707,11 +1160,11 @@
     ta.focus();
   }
 
-  async function uploadImageFile(file) {
+  async function uploadMediaFile(file) {
     if (!activeId) throw new Error("无活动笔记");
     const fd = new FormData();
     fd.append("note", activeId);
-    fd.append("file", file, file.name || "image.png");
+    fd.append("file", file, file.name || "file.bin");
     const r = await apiFetch("/api/media", { method: "POST", body: fd });
     if (!r.ok) {
       let msg = r.statusText;
@@ -725,21 +1178,54 @@
     }
     const j = await r.json();
     if (!j.name) throw new Error("响应无效");
-    return j.name;
+    const kind = j.kind === "file" ? "file" : "image";
+    return { name: j.name, kind };
   }
 
-  async function insertImagesFromFiles(files) {
+  /** 从剪贴板收集文件：优先 clipboardData.files（资源管理器复制文件后粘贴常见），否则回退到 items（截图等） */
+  function collectFilesFromClipboard(dataTransfer) {
+    if (!dataTransfer) return [];
+    const out = [];
+    const files = dataTransfer.files;
+    if (files && files.length > 0) {
+      for (let i = 0; i < files.length; i++) {
+        out.push(files[i]);
+      }
+      return out;
+    }
+    const items = dataTransfer.items;
+    if (!items || !items.length) return out;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind !== "file") continue;
+      const f = item.getAsFile();
+      if (f) out.push(f);
+    }
+    return out;
+  }
+
+  async function insertMediaFromFiles(files) {
     if (!getActiveNote() || !files.length) return;
     for (const file of files) {
-      if (!file.type.startsWith("image/")) continue;
+      if (file.size > maxUploadBytes) {
+        setSavedHint("文件过大（单文件最大 " + maxUploadMBLabel() + "MB）");
+        setTimeout(() => setSavedHint(""), 3500);
+        return;
+      }
       try {
-        setSavedHint("上传图片…");
-        const url = await uploadImageFile(file);
+        setSavedHint("上传中…");
+        const { name, kind } = await uploadMediaFile(file);
         if (viewMode === "preview") setViewMode("edit");
-        insertAtCursor(els.body, "\n\n![](" + url + ")\n\n");
+        if (kind === "file") {
+          const label = String(file.name || name).replace(/[[\]]/g, "");
+          insertIntoEditor("\n\n[" + label + "](" + name + ")\n\n");
+        } else {
+          insertIntoEditor("\n\n![](" + name + ")\n\n");
+        }
         scheduleSave();
-      } catch {
-        setSavedHint("图片上传失败");
+      } catch (e) {
+        const msg = e && e.message ? String(e.message) : "";
+        setSavedHint(msg ? "上传失败：" + msg.slice(0, 120) : "上传失败");
         return;
       }
     }
@@ -752,51 +1238,82 @@
     activeId = id;
     activeNoteDir = note.dir || "";
     els.title.value = note.title;
-    els.body.value = note.body;
+    setBodyText(note.body);
+    if (els.notePublic) els.notePublic.checked = !!note.public;
+    if (els.noteTags) els.noteTags.value = stringListToInput(note.tags);
+    if (els.noteCategories) els.noteCategories.value = stringListToInput(note.categories);
     setViewMode(startInEdit ? "edit" : "preview");
     showEditor(true);
+    if (isMobileLayout()) {
+      collapseSidebar();
+    }
     els.title.focus();
     renderList();
     setSavedHint("");
+    persistedEditorState = snapshotEditorFromNote(note);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        syncPersistedEditorFromDOM();
+      });
+    });
   }
 
-  /** @returns {Promise<boolean>} */
+  /** @returns {Promise<{ ok: boolean, saved: boolean }>} */
   async function flushEditorToStore() {
     const note = getActiveNote();
-    if (!note) return true;
+    if (!note) return { ok: true, saved: false };
+    if (!isEditorDirty()) return { ok: true, saved: false };
     const title = els.title.value;
-    const body = els.body.value;
+    const body = getBodyText();
+    const tags = els.noteTags ? inputToStringList(els.noteTags.value) : [];
+    const categories = els.noteCategories ? inputToStringList(els.noteCategories.value) : [];
     try {
       const r = await apiFetch("/api/notes/" + encodeURIComponent(note.id), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, body }),
+        body: JSON.stringify({
+          title,
+          body,
+          public: els.notePublic ? !!els.notePublic.checked : false,
+          tags,
+          categories,
+        }),
       });
       if (!r.ok) {
         setSavedHint("保存失败");
-        return false;
+        return { ok: false, saved: false };
       }
       const updated = await r.json();
       const idx = notes.findIndex((n) => n.id === updated.id);
       if (idx >= 0) notes[idx] = updated;
       if (updated.dir) activeNoteDir = updated.dir;
+      persistedEditorState = snapshotEditorFromNote(updated);
       renderList();
-      return true;
+      return { ok: true, saved: true };
     } catch {
       setSavedHint("保存失败");
-      return false;
+      return { ok: false, saved: false };
     }
   }
 
   function flushEditorKeepalive() {
     const note = getActiveNote();
     if (!note) return;
+    if (!isEditorDirty()) return;
     const title = els.title.value;
-    const body = els.body.value;
+    const body = getBodyText();
+    const tags = els.noteTags ? inputToStringList(els.noteTags.value) : [];
+    const categories = els.noteCategories ? inputToStringList(els.noteCategories.value) : [];
     fetch("/api/notes/" + encodeURIComponent(note.id), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, body }),
+      body: JSON.stringify({
+        title,
+        body,
+        public: els.notePublic ? !!els.notePublic.checked : false,
+        tags,
+        categories,
+      }),
       keepalive: true,
       credentials: "same-origin",
     }).catch(() => {});
@@ -806,9 +1323,10 @@
     if (saveTimer) clearTimeout(saveTimer);
     setSavingHint(true);
     saveTimer = setTimeout(async () => {
-      const ok = await flushEditorToStore();
+      const r = await flushEditorToStore();
       setSavingHint(false);
-      if (ok) {
+      if (!r.ok) return;
+      if (r.saved) {
         setSavedHint("已保存");
         if (hintTimer) clearTimeout(hintTimer);
         hintTimer = setTimeout(() => setSavedHint(""), 2000);
@@ -833,7 +1351,7 @@
     const r = await apiFetch("/api/notes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: "", body: "", beforeId }),
+      body: JSON.stringify({ title: "", body: "", beforeId, public: false }),
     });
     if (!r.ok) {
       setSavedHint("创建失败");
@@ -861,9 +1379,12 @@
     }
     notes = notes.filter((n) => n.id !== id);
     activeId = null;
+    persistedEditorState = null;
     activeNoteDir = "";
     els.title.value = "";
-    els.body.value = "";
+    setBodyText("");
+    if (els.noteTags) els.noteTags.value = "";
+    if (els.noteCategories) els.noteCategories.value = "";
     els.preview.innerHTML = "";
     showEditor(false);
     renderList();
@@ -879,31 +1400,38 @@
   els.tabEdit.addEventListener("click", () => setViewMode("edit"));
   els.tabPreview.addEventListener("click", () => setViewMode("preview"));
 
-  els.body.addEventListener("paste", async (e) => {
-    const items = e.clipboardData?.items;
-    if (!items || !getActiveNote()) return;
-    for (const item of items) {
-      if (item.kind === "file" && item.type.startsWith("image/")) {
-        e.preventDefault();
-        const file = item.getAsFile();
-        if (!file) continue;
-        try {
-          setSavedHint("上传图片…");
-          const url = await uploadImageFile(file);
-          if (viewMode === "preview") setViewMode("edit");
-          insertAtCursor(els.body, "\n\n![](" + url + ")\n\n");
-          scheduleSave();
-          setSavedHint("");
-        } catch {
-          setSavedHint("图片上传失败");
-        }
-        break;
-      }
-    }
+  els.noteImageFile?.addEventListener("change", async () => {
+    const files = Array.from(els.noteImageFile.files || []);
+    els.noteImageFile.value = "";
+    await insertMediaFromFiles(files);
+  });
+
+  els.sidebarBackdrop?.addEventListener("click", () => collapseSidebar());
+  els.btnMobileMenu?.addEventListener("click", () => expandSidebar());
+  els.btnEmptyOpenList?.addEventListener("click", () => expandSidebar());
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!isMobileLayout() || els.app?.classList.contains("sidebar-collapsed")) return;
+    collapseSidebar();
+    e.preventDefault();
   });
 
   const main = els.editorMain;
   if (main) {
+    // 捕获阶段先于 CodeMirror 处理，才能拦截「粘贴文件」；仅在有文件时 preventDefault，纯文字粘贴不受影响
+    main.addEventListener(
+      "paste",
+      async (e) => {
+        if (!getActiveNote()) return;
+        const files = collectFilesFromClipboard(e.clipboardData);
+        if (!files.length) return;
+        e.preventDefault();
+        e.stopPropagation();
+        await insertMediaFromFiles(files);
+      },
+      true
+    );
     main.addEventListener("dragover", (e) => {
       if (!getActiveNote()) return;
       e.preventDefault();
@@ -919,12 +1447,19 @@
       if (!getActiveNote()) return;
       e.preventDefault();
       main.classList.remove("drop-target");
-      const files = Array.from(e.dataTransfer?.files || []).filter((f) => f.type.startsWith("image/"));
-      await insertImagesFromFiles(files);
+      const files = Array.from(e.dataTransfer?.files || []);
+      await insertMediaFromFiles(files);
     });
   }
 
   els.noteList.addEventListener("click", async (e) => {
+    const gbtn = e.target.closest(".note-list-group-btn");
+    const monthKey = gbtn && (gbtn.getAttribute("data-month-key") || gbtn.dataset.monthKey);
+    if (monthKey) {
+      e.preventDefault();
+      tryToggleMonthCollapse(monthKey);
+      return;
+    }
     const btn = e.target.closest(".note-item-btn");
     if (!btn || !btn.dataset.id) return;
     if (btn.dataset.id === activeId) return;
@@ -1007,14 +1542,22 @@
     });
   });
 
+  els.notePublic?.addEventListener("change", scheduleSave);
+  els.noteTags?.addEventListener("input", scheduleSave);
+  els.noteCategories?.addEventListener("input", scheduleSave);
+
   window.addEventListener("beforeunload", () => {
     clearPendingSave();
     flushEditorKeepalive();
   });
 
-  /** 整页跳转授权：比弹窗更稳，避免小窗里 GitHub 页加载慢、被拦截或脚本异常。 */
+  /** 整页跳转授权：比弹窗更稳，避免小窗里 OAuth 页加载慢、被拦截或脚本异常。 */
   function startGitHubLogin() {
     window.location.assign("/auth/github/start");
+  }
+
+  function startGiteeLogin() {
+    window.location.assign("/auth/gitee/start");
   }
 
   document.getElementById("auth-gate")?.addEventListener("click", (e) => {
@@ -1022,12 +1565,16 @@
       e.preventDefault();
       startGitHubLogin();
     }
+    if (e.target && e.target.id === "btn-gitee-login") {
+      e.preventDefault();
+      startGiteeLogin();
+    }
   });
 
   window.addEventListener("message", (ev) => {
     if (ev.origin !== window.location.origin) return;
     const d = ev.data;
-    if (!d || d.type !== "notes-github-oauth") return;
+    if (!d || (d.type !== "notes-oauth" && d.type !== "notes-github-oauth")) return;
     if (d.ok) {
       refreshAuth().then(async () => {
         if (authConfigured && authUser) {
@@ -1048,6 +1595,7 @@
 
   loadTheme();
   loadSidebarState();
+  loadMonthCollapsedState();
 
   async function boot() {
     await refreshAuth();

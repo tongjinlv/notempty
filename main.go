@@ -38,7 +38,26 @@ func newNoteID() string {
 	return "n_" + hex.EncodeToString(b)
 }
 
-const maxImageUpload = 32 << 20
+// HTTP 缓存：图片/字体等可长期不变；HTML/API 仍由各自路由决定不长期缓存。
+const (
+	cacheImmutableYear = "public, max-age=31536000, immutable"
+	cacheOneWeek       = "public, max-age=604800"
+	cacheOneDay        = "public, max-age=86400"
+)
+
+// setVaultFileCache 为笔记目录下文件设置 Cache-Control（图片多为随机文件名，可用 immutable）。
+func setVaultFileCache(c *gin.Context, absPath string, contentType string, isImage bool) {
+	if isImage || strings.HasPrefix(contentType, "image/") {
+		c.Header("Cache-Control", cacheImmutableYear)
+		return
+	}
+	switch strings.ToLower(filepath.Ext(absPath)) {
+	case ".woff", ".woff2", ".ttf", ".otf", ".eot":
+		c.Header("Cache-Control", cacheImmutableYear)
+	default:
+		c.Header("Cache-Control", cacheOneDay)
+	}
+}
 
 func mapImageExt(ct string) (ext string, ok bool) {
 	switch strings.Split(ct, ";")[0] {
@@ -52,8 +71,36 @@ func mapImageExt(ct string) (ext string, ok bool) {
 		return ".webp", true
 	case "image/svg+xml":
 		return ".svg", true
+	case "image/heic", "image/heif":
+		return ".heic", true
+	case "image/avif":
+		return ".avif", true
+	case "image/bmp":
+		return ".bmp", true
 	default:
 		return "", false
+	}
+}
+
+// isBMPImage Windows BMP 魔数为 "BM"；http.DetectContentType 常无法识别。
+func isBMPImage(data []byte) bool {
+	return len(data) >= 2 && data[0] == 0x42 && data[1] == 0x4D
+}
+
+// isISOBMFFImage 识别 ISO Base Media（手机相册常见 HEIC/HEIF/AVIF），
+// 因 http.DetectContentType 常误判为 application/octet-stream 导致上传被拒。
+func isISOBMFFImage(data []byte) (ext string, contentType string, ok bool) {
+	if len(data) < 12 || string(data[4:8]) != "ftyp" {
+		return "", "", false
+	}
+	brand := string(data[8:12])
+	switch brand {
+	case "heic", "heix", "hevc", "hevx", "mif1", "msf1", "heim", "heis":
+		return ".heic", "image/heic", true
+	case "avif", "avis":
+		return ".avif", "image/avif", true
+	default:
+		return "", "", false
 	}
 }
 
@@ -62,6 +109,12 @@ func detectImageType(data []byte) (ext string, contentType string, ok bool) {
 	if len(t) > 0 && bytes.Contains(data, []byte("<svg")) &&
 		(strings.HasPrefix(strings.ToLower(t), "<svg") || strings.HasPrefix(strings.ToLower(t), "<?xml")) {
 		return ".svg", "image/svg+xml", true
+	}
+	if ext, contentType, ok = isISOBMFFImage(data); ok {
+		return ext, contentType, true
+	}
+	if isBMPImage(data) {
+		return ".bmp", "image/bmp", true
 	}
 	ct := http.DetectContentType(data)
 	ext, ok = mapImageExt(ct)
@@ -137,7 +190,7 @@ func tryMigrateLegacy(vaultRoot, explicitLegacy string) {
 	}
 }
 
-func registerVaultAPI(g *gin.RouterGroup) {
+func registerVaultAPI(g *gin.RouterGroup, maxUploadBytes int64) {
 	g.POST("/media", func(c *gin.Context) {
 		v := mustCtxVault(c)
 		noteID := strings.TrimSpace(c.PostForm("note"))
@@ -157,22 +210,33 @@ func registerVaultAPI(g *gin.RouterGroup) {
 		}
 		defer src.Close()
 
-		limited := io.LimitReader(src, maxImageUpload+1)
+		limited := io.LimitReader(src, maxUploadBytes+1)
 		data, err := io.ReadAll(limited)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		if len(data) > maxImageUpload {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "图片过大"})
+		if len(data) > int(maxUploadBytes) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error": fmt.Sprintf("文件过大（最大 %dMB）", maxUploadBytes/(1<<20)),
+			})
 			return
 		}
 		ext, _, ok := detectImageType(data)
-		if !ok || ext == "" {
-			c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "仅支持 png / jpeg / gif / webp / svg"})
+		if ok && ext != "" {
+			name, err := v.SaveImage(noteID, data, ext)
+			if err != nil {
+				if os.IsNotExist(err) {
+					c.JSON(http.StatusNotFound, gin.H{"error": "笔记不存在"})
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusCreated, gin.H{"name": name, "kind": "image"})
 			return
 		}
-		name, err := v.SaveImage(noteID, data, ext)
+		name, err := v.SaveAttachment(noteID, data, fh.Filename)
 		if err != nil {
 			if os.IsNotExist(err) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "笔记不存在"})
@@ -181,7 +245,7 @@ func registerVaultAPI(g *gin.RouterGroup) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusCreated, gin.H{"name": name})
+		c.JSON(http.StatusCreated, gin.H{"name": name, "kind": "file"})
 	})
 
 	g.GET("/vault/*filepath", func(c *gin.Context) {
@@ -209,19 +273,23 @@ func registerVaultAPI(g *gin.RouterGroup) {
 		}
 		switch strings.ToLower(filepath.Ext(abs)) {
 		case ".md", ".markdown":
+			c.Header("Cache-Control", cacheOneDay)
 			c.Data(http.StatusOK, "text/markdown; charset=utf-8", data)
 			return
 		case ".css":
+			c.Header("Cache-Control", cacheOneDay)
 			c.Data(http.StatusOK, "text/css; charset=utf-8", data)
 			return
 		case ".js", ".mjs":
+			c.Header("Cache-Control", cacheOneDay)
 			c.Data(http.StatusOK, "application/javascript; charset=utf-8", data)
 			return
 		}
-		ct, _, ok := detectImageType(data)
-		if !ok {
+		ct, _, imgOk := detectImageType(data)
+		if !imgOk {
 			ct = http.DetectContentType(data)
 		}
+		setVaultFileCache(c, abs, ct, imgOk)
 		c.Data(http.StatusOK, ct, data)
 	})
 }
@@ -252,23 +320,36 @@ func checkListenAddr(addr string) error {
 	return ln.Close()
 }
 
-func buildRouter(vaultBase string, webRoot fs.FS, gh *githubAuth) http.Handler {
+func buildRouter(vaultBase string, webRoot fs.FS, auth *authBundle, maxUploadBytes int64) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.MaxMultipartMemory = maxImageUpload
+	r.MaxMultipartMemory = maxUploadBytes
 	r.RedirectTrailingSlash = false
 	r.RedirectFixedPath = false
 	r.HandleMethodNotAllowed = false
 	r.Use(gin.Recovery())
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
-		SkipPaths: []string{"/", "/styles.css", "/app.js", "/favicon.svg", "/favicon.ico", "/api/auth/status", "/auth/github/callback"},
+		SkipPaths: []string{"/", "/styles.css", "/app.js", "/favicon.svg", "/favicon.ico", "/api/auth/status", "/auth/github/callback", "/auth/gitee/callback", "/vendor/easymde/easymde.min.css", "/vendor/easymde/easymde.min.js", "/public", "/public/", "/public.js", "/api/public/posts"},
 	}))
+	// web/vendor 下为打包的第三方库，内容极少随部署变化；长期缓存减少重复下载。
+	// 升级 EasyMDE 时请同步修改 web/index.html 中 ?v= 版本号。
+	r.Use(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/vendor/") {
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		}
+		c.Next()
+	})
 
-	r.GET("/api/auth/status", handleAuthStatus(gh))
-	registerAuthRoutes(r, gh)
+	registerPublicAPI(r, vaultBase)
+	registerPublicWeb(r, webRoot)
 
-	api := r.Group("/api", requireGitHubOAuthReady(gh), requireAuthAndUserVault(vaultBase, gh))
-	registerVaultAPI(api)
+	r.GET("/api/auth/status", handleAuthStatus(auth, maxUploadBytes))
+	registerGitHubOAuthRoutes(r, auth.github)
+	registerGiteeOAuthRoutes(r, auth.gitee)
+	registerLogoutRoute(r, auth)
+
+	api := r.Group("/api", requireOAuthReady(auth), requireAuthAndUserVault(vaultBase, auth))
+	registerVaultAPI(api, maxUploadBytes)
 
 	api.GET("/notes", func(c *gin.Context) {
 		v := mustCtxVault(c)
@@ -281,16 +362,19 @@ func buildRouter(vaultBase string, webRoot fs.FS, gh *githubAuth) http.Handler {
 	})
 
 	type writeBody struct {
-		Title    string `json:"title"`
-		Body     string `json:"body"`
-		BeforeID string `json:"beforeId"`
+		Title        string   `json:"title"`
+		Body         string   `json:"body"`
+		BeforeID     string   `json:"beforeId"`
+		Public       bool     `json:"public"`
+		Tags         []string `json:"tags"`
+		Categories   []string `json:"categories"`
 	}
 
 	api.POST("/notes", func(c *gin.Context) {
 		v := mustCtxVault(c)
 		var wb writeBody
 		_ = c.ShouldBindJSON(&wb)
-		n, err := v.Create(wb.Title, wb.Body, wb.BeforeID)
+		n, err := v.Create(wb.Title, wb.Body, wb.BeforeID, wb.Public, wb.Tags, wb.Categories)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -306,7 +390,7 @@ func buildRouter(vaultBase string, webRoot fs.FS, gh *githubAuth) http.Handler {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 			return
 		}
-		n, err := v.Update(id, wb.Title, wb.Body)
+		n, err := v.Update(id, wb.Title, wb.Body, wb.Public, wb.Tags, wb.Categories)
 		if err != nil {
 			if err == os.ErrNotExist {
 				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -338,6 +422,7 @@ func buildRouter(vaultBase string, webRoot fs.FS, gh *githubAuth) http.Handler {
 			c.String(http.StatusInternalServerError, "无法读取页面")
 			return
 		}
+		c.Header("Cache-Control", "no-cache")
 		c.Data(http.StatusOK, "text/html; charset=utf-8", b)
 	})
 	r.GET("/styles.css", func(c *gin.Context) {
@@ -346,6 +431,7 @@ func buildRouter(vaultBase string, webRoot fs.FS, gh *githubAuth) http.Handler {
 			c.Status(http.StatusNotFound)
 			return
 		}
+		c.Header("Cache-Control", cacheOneWeek)
 		c.Data(http.StatusOK, "text/css; charset=utf-8", b)
 	})
 	r.GET("/app.js", func(c *gin.Context) {
@@ -354,9 +440,14 @@ func buildRouter(vaultBase string, webRoot fs.FS, gh *githubAuth) http.Handler {
 			c.Status(http.StatusNotFound)
 			return
 		}
+		c.Header("Cache-Control", cacheOneWeek)
 		c.Data(http.StatusOK, "application/javascript; charset=utf-8", b)
 	})
+	if vendorFS, err := fs.Sub(webRoot, "vendor"); err == nil {
+		r.StaticFS("/vendor", http.FS(vendorFS))
+	}
 	serveFavicon := func(c *gin.Context) {
+		c.Header("Cache-Control", cacheOneWeek)
 		if len(faviconSVG) == 0 {
 			b, err := fs.ReadFile(webRoot, "favicon.svg")
 			if err != nil {
@@ -366,7 +457,6 @@ func buildRouter(vaultBase string, webRoot fs.FS, gh *githubAuth) http.Handler {
 			c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", b)
 			return
 		}
-		c.Header("Cache-Control", "public, max-age=86400")
 		c.Data(http.StatusOK, "image/svg+xml; charset=utf-8", faviconSVG)
 	}
 	r.GET("/favicon.svg", serveFavicon)
@@ -377,11 +467,12 @@ func buildRouter(vaultBase string, webRoot fs.FS, gh *githubAuth) http.Handler {
 }
 
 type program struct {
-	addr      string
-	vaultBase string
-	web       fs.FS
-	github    *githubAuth
-	srv       *http.Server
+	addr           string
+	vaultBase      string
+	web            fs.FS
+	auth           *authBundle
+	uploadMaxBytes int64
+	srv            *http.Server
 }
 
 func appLog(s service.Service) service.Logger {
@@ -426,7 +517,7 @@ func (consoleLogger) Errorf(format string, args ...interface{}) error {
 
 func (p *program) Start(s service.Service) error {
 	lg := appLog(s)
-	handler := buildRouter(p.vaultBase, p.web, p.github)
+	handler := buildRouter(p.vaultBase, p.web, p.auth, p.uploadMaxBytes)
 	p.srv = &http.Server{
 		Addr:    p.addr,
 		Handler: handler,
@@ -455,8 +546,8 @@ func (p *program) Stop(s service.Service) error {
 	return nil
 }
 
-func runHTTPServerForeground(addr string, vaultBase string, webRoot fs.FS, gh *githubAuth) error {
-	handler := buildRouter(vaultBase, webRoot, gh)
+func runHTTPServerForeground(addr string, vaultBase string, webRoot fs.FS, auth *authBundle, maxUploadBytes int64) error {
+	handler := buildRouter(vaultBase, webRoot, auth, maxUploadBytes)
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: handler,
@@ -505,6 +596,7 @@ func main() {
 		log.Fatalf("读取配置 %s: %v", cfgFile, err)
 	}
 	listenAddr := normalizeListenAddr(strings.TrimSpace(fileCfg.Listen))
+	uploadMaxBytes := normalizeMaxUploadBytes(fileCfg.MaxUploadMB)
 
 	var gh *githubAuth
 	if fileCfg.GitHubOAuth != nil {
@@ -515,7 +607,24 @@ func main() {
 			gh = &githubAuth{cfg: gc}
 		}
 	} else {
-		log.Printf("提示: 未配置 githubOAuth，服务已启动；在 notes-config.json 中填写并重启后即可 GitHub 登录。")
+		log.Printf("提示: 未配置 githubOAuth。")
+	}
+
+	var gitee *giteeAuth
+	if fileCfg.GiteeOAuth != nil {
+		gc := normalizeGiteeOAuth(*fileCfg.GiteeOAuth)
+		if err := validateGiteeOAuth(gc); err != nil {
+			log.Printf("提示: giteeOAuth 未填全或无效，服务已启动但无法登录（%v）", err)
+		} else {
+			gitee = &giteeAuth{cfg: gc}
+		}
+	} else {
+		log.Printf("提示: 未配置 giteeOAuth。")
+	}
+
+	auth := &authBundle{github: gh, gitee: gitee}
+	if !auth.oauthReady() {
+		log.Printf("提示: 未配置有效的 githubOAuth 或 giteeOAuth，服务已启动；在 notes-config.json 中填写并重启后即可登录。")
 	}
 
 	vaultBase, legacyJSON := computeVaultRoot(resolveDataPathForConfig(fileCfg.Data))
@@ -541,7 +650,7 @@ func main() {
 				}
 			}
 			if !hasUserNotes {
-				log.Printf("提示: 在 %s 根下检测到旧版笔记数据；多用户模式下笔记应在 users/<GitHub登录>/ 下，请自行迁移或备份后移动目录。", vaultBase)
+				log.Printf("提示: 在 %s 根下检测到旧版笔记数据；多用户模式下笔记应在 users/<provider>/<登录名>/ 下，请自行迁移或备份后移动目录。", vaultBase)
 			}
 		}
 	}
@@ -559,10 +668,11 @@ func main() {
 	}
 
 	prg := &program{
-		addr:      listenAddr,
-		vaultBase: vaultBase,
-		web:       webRoot,
-		github:    gh,
+		addr:           listenAddr,
+		vaultBase:      vaultBase,
+		web:            webRoot,
+		auth:           auth,
+		uploadMaxBytes: uploadMaxBytes,
 	}
 
 	if *svcFlag != "" {
@@ -577,9 +687,13 @@ func main() {
 	}
 
 	log.Printf("配置: %s", cfgFile)
-	log.Printf("Markdown 仓库根: %s/users/<GitHub登录>/（其下 YYYY/MM/DD/<id>/note.md）", vaultBase)
-	if gh != nil {
-		log.Println("GitHub 登录已就绪（OAuth App 的 callbackUrl 须与配置完全一致）")
+	log.Printf("单文件上传上限: %dMB（notes-config.json 中 maxUploadMB，默认 10，最大 512）", uploadMaxBytes/(1<<20))
+	log.Printf("Markdown 仓库根: %s/users/<provider>/<登录名>/（其下 YYYY-MM/<id>/index.md，例如 2026-03/n_xxx；兼容旧版 note.md、YYYYMM、YYYY/MM、YYYY/MM/DD）", vaultBase)
+	if auth.github != nil && auth.github.enabled() {
+		log.Println("GitHub 登录已就绪（OAuth 应用的 callbackUrl 须与配置完全一致）")
+	}
+	if auth.gitee != nil && auth.gitee.enabled() {
+		log.Println("Gitee 登录已就绪（第三方应用的回调地址须与配置完全一致）")
 	}
 	log.Printf("监听: %s | 在浏览器打开: %s", listenAddr, browserOpenURL(listenAddr))
 	if bindsBroad(listenAddr) {
@@ -594,7 +708,7 @@ func main() {
 		)
 	}
 	if service.Interactive() {
-		if err := runHTTPServerForeground(listenAddr, vaultBase, webRoot, gh); err != nil {
+		if err := runHTTPServerForeground(listenAddr, vaultBase, webRoot, auth, uploadMaxBytes); err != nil {
 			log.Fatal(err)
 		}
 		return

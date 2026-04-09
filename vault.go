@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,19 +19,62 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Note 与前端 JSON 对齐；Dir 为相对 vault 的路径，如 2026/03/24/n_xxx（正斜杠）
+// Note 与前端 JSON 对齐；Dir 为相对 vault 的路径，如 2026-03/n_xxx（正斜杠）。
 type Note struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Body      string `json:"body"`
-	UpdatedAt int64  `json:"updatedAt"`
-	Dir       string `json:"dir"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Body        string   `json:"body"`
+	UpdatedAt   int64    `json:"updatedAt"`
+	Dir         string   `json:"dir"`
+	Public      bool     `json:"public"`
+	Tags        []string `json:"tags,omitempty"`
+	Categories  []string `json:"categories,omitempty"`
 }
 
-type noteFM struct {
-	ID      string `yaml:"id"`
-	Title   string `yaml:"title"`
-	Updated string `yaml:"updated"`
+// noteFMIn 读取 front matter：兼容本站字段与 Hugo 常用字段（date、draft、tags 等）。
+type noteFMIn struct {
+	ID         string   `yaml:"id"`
+	Title      string   `yaml:"title"`
+	Updated    string   `yaml:"updated"`
+	Public     *bool    `yaml:"public"`
+	Draft      *bool    `yaml:"draft"`
+	Tags       []string `yaml:"tags"`
+	Categories []string `yaml:"categories"`
+}
+
+// hugoFlowQuotedList 序列化为 Hugo 常见行内数组：tags: ["技术", "Hugo"]
+type hugoFlowQuotedList []string
+
+func (s hugoFlowQuotedList) MarshalYAML() (interface{}, error) {
+	if len(s) == 0 {
+		return nil, nil
+	}
+	seq := &yaml.Node{
+		Kind:    yaml.SequenceNode,
+		Style:   yaml.FlowStyle,
+		Content: make([]*yaml.Node, 0, len(s)),
+	}
+	for _, x := range s {
+		seq.Content = append(seq.Content, &yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Tag:   "!!str",
+			Value: x,
+			Style: yaml.DoubleQuotedStyle,
+		})
+	}
+	return seq, nil
+}
+
+// noteFMOut 写入 front matter：带 Hugo 常见的 date / draft（draft 与 public 互斥语义：draft=true 表示未发布）。
+type noteFMOut struct {
+	ID         string             `yaml:"id"`
+	Title      string             `yaml:"title"`
+	Updated    string             `yaml:"updated"`
+	Date       string             `yaml:"date,omitempty"`
+	Public     bool               `yaml:"public"`
+	Draft      bool               `yaml:"draft"`
+	Tags       hugoFlowQuotedList `yaml:"tags,omitempty"`
+	Categories hugoFlowQuotedList `yaml:"categories,omitempty"`
 }
 
 type legacyFile struct {
@@ -50,6 +94,9 @@ var (
 	yearRe  = regexp.MustCompile(`^\d{4}$`)
 	monthRe = regexp.MustCompile(`^(0[1-9]|1[0-2])$`)
 	dayRe   = regexp.MustCompile(`^(0[1-9]|[12]\d|3[01])$`)
+	yearMonthHyphenRe = regexp.MustCompile(`^(19|20)\d{2}-(0[1-9]|1[0-2])$`)
+	// 旧版单段年月目录（无连字符），仍识别以便读取已有数据
+	yearMonthCompactRe = regexp.MustCompile(`^(19|20)\d{2}(0[1-9]|1[0-2])$`)
 	noteFolderRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 )
 
@@ -89,6 +136,80 @@ func splitFrontMatter(raw []byte) (front []byte, body []byte, hasFM bool) {
 	return front, body, true
 }
 
+func resolvePublicFromFM(public *bool, draft *bool) bool {
+	if public != nil {
+		return *public
+	}
+	if draft != nil {
+		return !*draft
+	}
+	return false
+}
+
+func parseYAMLDateValue(v interface{}) (time.Time, bool) {
+	if v == nil {
+		return time.Time{}, false
+	}
+	switch x := v.(type) {
+	case time.Time:
+		return x, true
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return time.Time{}, false
+		}
+		layouts := []string{
+			time.RFC3339,
+			"2006-01-02T15:04:05Z07:00",
+			"2006-01-02T15:04:05",
+			"2006-01-02",
+		}
+		for _, layout := range layouts {
+			if t, err := time.Parse(layout, s); err == nil {
+				return t, true
+			}
+		}
+		return time.Time{}, false
+	default:
+		return time.Time{}, false
+	}
+}
+
+func updatedAtFromFM(updated string, dateFromMap interface{}, modTime time.Time) int64 {
+	if strings.TrimSpace(updated) != "" {
+		if t, err := time.Parse(time.RFC3339, updated); err == nil {
+			return t.UnixMilli()
+		}
+	}
+	if t, ok := parseYAMLDateValue(dateFromMap); ok {
+		return t.UnixMilli()
+	}
+	return modTime.UnixMilli()
+}
+
+func normalizeStringSlice(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func parseNoteMD(raw []byte, folderID string, modTime time.Time) (Note, error) {
 	front, body, ok := splitFrontMatter(raw)
 	n := Note{Dir: ""}
@@ -99,9 +220,15 @@ func parseNoteMD(raw []byte, folderID string, modTime time.Time) (Note, error) {
 		n.UpdatedAt = modTime.UnixMilli()
 		return n, nil
 	}
-	var fm noteFM
+	var fm noteFMIn
 	if err := yaml.Unmarshal(front, &fm); err != nil {
 		return Note{}, err
+	}
+	var rawMap map[string]interface{}
+	_ = yaml.Unmarshal(front, &rawMap)
+	var dateVal interface{}
+	if rawMap != nil {
+		dateVal = rawMap["date"]
 	}
 	if fm.ID != "" {
 		n.ID = fm.ID
@@ -109,24 +236,25 @@ func parseNoteMD(raw []byte, folderID string, modTime time.Time) (Note, error) {
 		n.ID = folderID
 	}
 	n.Title = fm.Title
-	if fm.Updated != "" {
-		if t, err := time.Parse(time.RFC3339, fm.Updated); err == nil {
-			n.UpdatedAt = t.UnixMilli()
-		} else {
-			n.UpdatedAt = modTime.UnixMilli()
-		}
-	} else {
-		n.UpdatedAt = modTime.UnixMilli()
-	}
+	n.UpdatedAt = updatedAtFromFM(fm.Updated, dateVal, modTime)
+	n.Public = resolvePublicFromFM(fm.Public, fm.Draft)
+	n.Tags = normalizeStringSlice(fm.Tags)
+	n.Categories = normalizeStringSlice(fm.Categories)
 	n.Body = string(body)
 	return n, nil
 }
 
 func composeNoteMD(n Note, updated time.Time) ([]byte, error) {
-	fm := noteFM{
-		ID:      n.ID,
-		Title:   n.Title,
-		Updated: updated.UTC().Format(time.RFC3339),
+	ut := updated.UTC()
+	fm := noteFMOut{
+		ID:         n.ID,
+		Title:      n.Title,
+		Updated:    ut.Format(time.RFC3339),
+		Date:       ut.Format("2006-01-02"),
+		Public:     n.Public,
+		Draft:      !n.Public,
+		Tags:       hugoFlowQuotedList(normalizeStringSlice(n.Tags)),
+		Categories: hugoFlowQuotedList(normalizeStringSlice(n.Categories)),
 	}
 	head, err := yaml.Marshal(fm)
 	if err != nil {
@@ -144,13 +272,24 @@ func composeNoteMD(n Note, updated time.Time) ([]byte, error) {
 }
 
 func isNoteLayoutDir(parts []string) bool {
-	if len(parts) != 4 {
+	switch len(parts) {
+	case 2:
+		ym := yearMonthHyphenRe.MatchString(parts[0]) || yearMonthCompactRe.MatchString(parts[0])
+		return ym && noteFolderRe.MatchString(parts[1])
+	case 3:
+		return yearRe.MatchString(parts[0]) && monthRe.MatchString(parts[1]) && noteFolderRe.MatchString(parts[2])
+	case 4:
+		return yearRe.MatchString(parts[0]) && monthRe.MatchString(parts[1]) && dayRe.MatchString(parts[2]) && noteFolderRe.MatchString(parts[3])
+	default:
 		return false
 	}
-	if !yearRe.MatchString(parts[0]) || !monthRe.MatchString(parts[1]) || !dayRe.MatchString(parts[2]) {
-		return false
+}
+
+func noteLayoutLeafID(parts []string) string {
+	if len(parts) == 0 {
+		return ""
 	}
-	return noteFolderRe.MatchString(parts[3])
+	return parts[len(parts)-1]
 }
 
 func (v *Vault) abs(rel string) string {
@@ -243,7 +382,7 @@ func (v *Vault) listNotesRawUnlocked() ([]Note, error) {
 		if d.IsDir() {
 			return nil
 		}
-		if filepath.Base(path) != "note.md" {
+		if !shouldProcessNoteMarkdownPath(path) {
 			return nil
 		}
 		rel, e := filepath.Rel(v.root, path)
@@ -264,7 +403,7 @@ func (v *Vault) listNotesRawUnlocked() ([]Note, error) {
 		if info != nil {
 			mt = info.ModTime()
 		}
-		note, e := parseNoteMD(raw, parts[3], mt)
+		note, e := parseNoteMD(raw, noteLayoutLeafID(parts), mt)
 		if e != nil {
 			return nil
 		}
@@ -332,29 +471,30 @@ func (v *Vault) List() ([]Note, error) {
 	return v.applySidebarOrderUnlocked(notes, order), nil
 }
 
-func (v *Vault) Create(title, body, beforeID string) (Note, error) {
+func (v *Vault) Create(title, body, beforeID string, public bool, tags, categories []string) (Note, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
 	id := newNoteID()
 	t := time.Now()
-	y, m, d := t.Date()
+	y, m, _ := t.Date()
 	dirRel := filepath.ToSlash(filepath.Join(
-		fmt.Sprintf("%04d", y),
-		fmt.Sprintf("%02d", int(m)),
-		fmt.Sprintf("%02d", d),
+		fmt.Sprintf("%04d-%02d", y, int(m)),
 		id,
 	))
 	full := v.abs(dirRel)
 	if err := os.MkdirAll(full, 0o755); err != nil {
 		return Note{}, err
 	}
-	n := Note{ID: id, Title: title, Body: body, UpdatedAt: t.UnixMilli(), Dir: dirRel}
+	n := Note{
+		ID: id, Title: title, Body: body, UpdatedAt: t.UnixMilli(), Dir: dirRel, Public: public,
+		Tags: normalizeStringSlice(tags), Categories: normalizeStringSlice(categories),
+	}
 	raw, err := composeNoteMD(n, t)
 	if err != nil {
 		return Note{}, err
 	}
-	if err := os.WriteFile(filepath.Join(full, "note.md"), raw, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(full, noteMarkdownFile), raw, 0o644); err != nil {
 		return Note{}, err
 	}
 	before := beforeID
@@ -362,10 +502,58 @@ func (v *Vault) Create(title, body, beforeID string) (Note, error) {
 		before = ""
 	}
 	v.sidebarInsertUnlocked(id, before)
+	invalidatePublicPostCache()
 	return n, nil
 }
 
-func (v *Vault) Update(id, title, body string) (Note, error) {
+func normalizedBodyForCompare(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
+}
+
+func noteUpdatePayloadEqual(existing Note, title, body string, public bool, tags, categories []string) bool {
+	if strings.TrimSpace(existing.Title) != strings.TrimSpace(title) {
+		return false
+	}
+	if normalizedBodyForCompare(existing.Body) != normalizedBodyForCompare(body) {
+		return false
+	}
+	if existing.Public != public {
+		return false
+	}
+	if !slices.Equal(normalizeStringSlice(existing.Tags), normalizeStringSlice(tags)) {
+		return false
+	}
+	if !slices.Equal(normalizeStringSlice(existing.Categories), normalizeStringSlice(categories)) {
+		return false
+	}
+	return true
+}
+
+func (v *Vault) readNoteMDInDirUnlocked(dirRel string) (Note, error) {
+	absDir := v.abs(dirRel)
+	path, ok := resolveNoteMarkdownPath(absDir)
+	if !ok {
+		return Note{}, os.ErrNotExist
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return Note{}, err
+	}
+	mt := time.Now()
+	if info, err := os.Stat(path); err == nil && info != nil {
+		mt = info.ModTime()
+	}
+	parts := strings.Split(filepath.ToSlash(dirRel), "/")
+	note, err := parseNoteMD(raw, noteLayoutLeafID(parts), mt)
+	if err != nil {
+		return Note{}, err
+	}
+	note.Dir = dirRel
+	return note, nil
+}
+
+func (v *Vault) Update(id, title, body string, public bool, tags, categories []string) (Note, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -373,16 +561,25 @@ func (v *Vault) Update(id, title, body string) (Note, error) {
 	if err != nil {
 		return Note{}, err
 	}
+	existing, rerr := v.readNoteMDInDirUnlocked(dirRel)
+	if rerr == nil && noteUpdatePayloadEqual(existing, title, body, public, tags, categories) {
+		return existing, nil
+	}
 	t := time.Now()
-	n := Note{ID: id, Title: title, Body: body, UpdatedAt: t.UnixMilli(), Dir: dirRel}
+	n := Note{
+		ID: id, Title: title, Body: body, UpdatedAt: t.UnixMilli(), Dir: dirRel, Public: public,
+		Tags: normalizeStringSlice(tags), Categories: normalizeStringSlice(categories),
+	}
 	raw, err := composeNoteMD(n, t)
 	if err != nil {
 		return Note{}, err
 	}
-	full := filepath.Join(v.abs(dirRel), "note.md")
+	full := filepath.Join(v.abs(dirRel), noteMarkdownFile)
 	if err := os.WriteFile(full, raw, 0o644); err != nil {
 		return Note{}, err
 	}
+	_ = os.Remove(filepath.Join(v.abs(dirRel), legacyNoteMarkdownFile))
+	invalidatePublicPostCache()
 	return n, nil
 }
 
@@ -392,7 +589,7 @@ func (v *Vault) findDirByIDUnlocked(id string) (string, error) {
 	}
 	var found string
 	_ = filepath.WalkDir(v.root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Base(path) != "note.md" {
+		if err != nil || d.IsDir() || !shouldProcessNoteMarkdownPath(path) {
 			return nil
 		}
 		rel, e := filepath.Rel(v.root, path)
@@ -413,11 +610,11 @@ func (v *Vault) findDirByIDUnlocked(id string) (string, error) {
 		if info != nil {
 			mt = info.ModTime()
 		}
-		note, e := parseNoteMD(raw, parts[3], mt)
+		note, e := parseNoteMD(raw, noteLayoutLeafID(parts), mt)
 		if e != nil {
 			return nil
 		}
-		if note.ID == id || parts[3] == id {
+		if note.ID == id || noteLayoutLeafID(parts) == id {
 			found = dirRel
 			return filepath.SkipAll
 		}
@@ -441,6 +638,7 @@ func (v *Vault) Delete(id string) error {
 		return err
 	}
 	v.sidebarRemoveUnlocked(id)
+	invalidatePublicPostCache()
 	return nil
 }
 
@@ -457,6 +655,86 @@ func (v *Vault) SaveImage(noteID string, data []byte, ext string) (fileName stri
 		return "", err
 	}
 	fileName = fmt.Sprintf("image-%d-%s%s", time.Now().UnixMilli(), hex.EncodeToString(b), ext)
+	full := filepath.Join(v.abs(dirRel), fileName)
+	if err := os.WriteFile(full, data, 0o644); err != nil {
+		return "", err
+	}
+	return fileName, nil
+}
+
+func sanitizeAttachmentBase(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	s = filepath.Base(s)
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-', r == '_', r == '.', r >= 0x0080: // 含中文等
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	out := strings.Trim(b.String(), "._")
+	if out == "" {
+		return ""
+	}
+	if ext := filepath.Ext(out); ext != "" {
+		base := strings.TrimSuffix(out, ext)
+		if len(base) > 120 {
+			base = base[:120]
+		}
+		return base
+	}
+	if len(out) > 120 {
+		return out[:120]
+	}
+	return out
+}
+
+func sanitizeAttachmentExt(ext string) string {
+	ext = strings.ToLower(strings.TrimSpace(ext))
+	if ext == "" || ext[0] != '.' || len(ext) > 32 {
+		return ""
+	}
+	for _, r := range ext[1:] {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			continue
+		}
+		return ""
+	}
+	return ext
+}
+
+// SaveAttachment 将任意二进制写入当前笔记目录，文件名由建议名与随机后缀组成。
+func (v *Vault) SaveAttachment(noteID string, data []byte, suggestedName string) (fileName string, err error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	dirRel, err := v.findDirByIDUnlocked(noteID)
+	if err != nil {
+		return "", err
+	}
+	base := filepath.Base(strings.TrimSpace(suggestedName))
+	if base == "" || base == "." {
+		base = "file"
+	}
+	ext := filepath.Ext(base)
+	nameOnly := strings.TrimSuffix(base, ext)
+	safeBase := sanitizeAttachmentBase(nameOnly)
+	if safeBase == "" {
+		safeBase = "file"
+	}
+	safeExt := sanitizeAttachmentExt(ext)
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	fileName = fmt.Sprintf("%s-%s%s", safeBase, hex.EncodeToString(b), safeExt)
 	full := filepath.Join(v.abs(dirRel), fileName)
 	if err := os.WriteFile(full, data, 0o644); err != nil {
 		return "", err
@@ -511,11 +789,9 @@ func migrateLegacyJSON(vaultRoot, jsonPath string) error {
 		if n.UpdatedAt == 0 {
 			t = time.Now()
 		}
-		y, m, d := t.Date()
+		y, m, _ := t.Date()
 		dirRel := filepath.ToSlash(filepath.Join(
-			fmt.Sprintf("%04d", y),
-			fmt.Sprintf("%02d", int(m)),
-			fmt.Sprintf("%02d", d),
+			fmt.Sprintf("%04d-%02d", y, int(m)),
 			n.ID,
 		))
 		full := filepath.Join(vaultRoot, filepath.FromSlash(dirRel))
@@ -527,7 +803,7 @@ func migrateLegacyJSON(vaultRoot, jsonPath string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(full, "note.md"), rawMD, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(full, noteMarkdownFile), rawMD, 0o644); err != nil {
 			return err
 		}
 	}
@@ -542,7 +818,7 @@ func vaultHasAnyNote(vaultRoot string) bool {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if filepath.Base(path) == "note.md" {
+		if isNoteMarkdownFilename(filepath.Base(path)) {
 			found = true
 			return filepath.SkipAll
 		}
