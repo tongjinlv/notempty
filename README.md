@@ -1,4 +1,5 @@
-<img width="1912" height="932" alt="image" src="https://github.com/user-attachments/assets/8d464e91-c477-4265-a7aa-49134e55fe23" />
+<img width="1610" height="800" alt="image" src="https://github.com/user-attachments/assets/e6c118dc-facd-4ac2-9de4-3da01f24d7c0" />
+
 
 # 本地网页笔记 · Local Notes
 
