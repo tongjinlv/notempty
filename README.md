@@ -1,9 +1,9 @@
 <img width="1610" height="800" alt="image" src="https://github.com/user-attachments/assets/e6c118dc-facd-4ac2-9de4-3da01f24d7c0" />
 
 
-# 本地网页笔记 · Local Notes
+# 轻量级笔记工具 · Notempty
 
-轻量、单二进制的 **本地 Markdown 笔记** 应用：内置 Web UI，数据以 `YYYY/MM/DD/<笔记ID>/note.md` 目录结构存放在本机，支持图片粘贴与拖拽上传、明暗主题、侧栏搜索与自定义排序。
+轻量、单二进制的 **Markdown 笔记** 应用：内置 Web UI，数据以 `YYYY/MM/DD/<笔记ID>/note.md` 目录结构存放在本机，支持图片粘贴与拖拽上传、明暗主题、侧栏搜索与自定义排序。
 
 **English:** A small self-hosted note app: single Go binary, embedded web UI, Markdown files on disk, image upload, dark/light theme.
 
