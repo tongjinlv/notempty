@@ -98,3 +98,8 @@ notes-vault/
 ## 贡献
 
 欢迎 Issue 与 Pull Request。提交前请确保 `go build ./...` 可通过。
+## 打赏
+![0ea55499b591050216db8cd9a883aa78](https://github.com/user-attachments/assets/a8fa9369-87bb-4019-a2ce-bcfbf6d4607b)
+## 联系
+![d877a363039d71cd1428ee28467e5356](https://github.com/user-attachments/assets/aa884b67-a03e-4585-9146-1bd47af4300f)
+
