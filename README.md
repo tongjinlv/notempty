@@ -1,4 +1,5 @@
-<img width="1610" height="800" alt="image" src="https://github.com/user-attachments/assets/e6c118dc-facd-4ac2-9de4-3da01f24d7c0" />
+<img width="1912" height="932" alt="image" src="https://github.com/user-attachments/assets/f99fe1ff-0a87-46ba-9053-44fb60fd8b02" />
+
 
 
 # 轻量级笔记工具 · Notempty
